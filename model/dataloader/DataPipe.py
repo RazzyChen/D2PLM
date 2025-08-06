@@ -181,17 +181,15 @@ def load_and_preprocess_data(
     except (ValueError, AttributeError):
         rank = 0
 
-    # Determine number of processes for preprocessing
     if preprocessing_num_proc is None:
         try:
             # 使用 Ray 分配的 CPU 资源
             ray_cpus = int(
                 ray.get_runtime_context().get_assigned_resources().get("CPU", 0)
             )
-            preprocessing_num_proc = ray_cpus if ray_cpus > 0 else 12
+            preprocessing_num_proc = ray_cpus
         except Exception:
-            preprocessing_num_proc = 12
-        preprocessing_num_proc = 12
+            preprocessing_num_proc = 4
 
     print(f"Using {preprocessing_num_proc} processes for preprocessing")
 
