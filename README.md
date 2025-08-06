@@ -1,4 +1,4 @@
-# DIT (Diffusion Transformer) 蛋白质语言模型 - Hugging Face版本
+# D2PLM 蛋白质语言模型
 
 这是一个基于吸收扩散概率模型 (D3PM) 的蛋白质语言模型项目，完全基于Hugging Face Transformers和Diffusers框架实现。该模型采用吸收扩散 (Absorbing Diffusion) 机制，能够从头生成符合生物学规则的新蛋白质序列。
 
@@ -15,8 +15,8 @@
 - **UniRef50数据集**: 使用经过聚类去冗余的标准蛋白质序列数据集
 
 ### 模型规格
-- **总参数量**: ~390M (10层) 或 ~320M (8层)
-- **层数**: 10层Transformer编码器
+- **总参数量**: ~390M (10层)
+- **层数**: 20层Transformer编码器
 - **隐藏维度**: 1024
 - **注意力头数**: 16
 - **FFN维度**: 4096 (4 × 1024)
