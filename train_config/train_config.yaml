@@ -55,6 +55,8 @@ training:
   # 检查点管理
   save_total_limit: 3
   load_best_model_at_end: false # 放弃在训练结束时加载最佳模型
+  deepspeed: "train_config/ZERO2.yaml" # DeepSpeed配置文件路径
+  ckpt: null # 手动指定检查点路径以恢复训练, e.g., "outputs/dit_model/checkpoint-5000"
 
 # 5. 系统与环境配置
 system:
@@ -65,10 +67,11 @@ system:
 
 # 6. Ray - 分布式训练配置
 ray:
+  run_name_prefix: "D2PLM"
   num_workers: 2
   use_gpu: true
   resources_per_worker:
-    CPU: 12
+    CPU: 11
     GPU: 1
 
 # 7. 输出与日志配置
@@ -78,6 +81,11 @@ output:
 logging:
   report_to: ["wandb"] # 使用wandb记录日志
   logging_strategy: "steps"
+
+# WandB specific configuration
+wandb:
+  project: "D2PLM_DiT"
+  entity: null # Replace with your wandb entity if needed
 
 # 8. 策略配置
 evaluation:

@@ -9,14 +9,19 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, Trainer, TrainingArguments
 import ray
-import ray.train.huggingface.transformers
+import ray.train
 from ray.train.torch import TorchTrainer
 from ray.train import ScalingConfig
+from datetime import datetime
+import wandb
+import os
 
 from model.backbone.diffusion_scheduler import DITDiffusionScheduler
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
 from model.dataloader.DataPipe import load_and_preprocess_data
+
+
 
 
 class DITDataCollator:
@@ -158,6 +163,20 @@ def prepare_dataset(cfg: DictConfig, tokenizer):
 def train_func(config: dict):
     """Ray Train training function"""
     cfg = OmegaConf.create(config)
+
+    # -- 初始化WandB --
+    # 只有主工作节点（rank 0）才应该初始化和上传
+    if ray.train.get_context().get_world_rank() == 0:
+        run_id = cfg.get("wandb_run_id") # 从配置中获取run_id
+        wandb.init(
+            project="D2PLM",
+            config=config,
+            name=ray.train.get_context().get_experiment_name(),
+            id=run_id,
+            resume="allow", # 允许恢复运行
+            reinit=True
+        )
+
     # 设置随机种子
     torch.manual_seed(cfg.system.seed)
 
@@ -211,6 +230,7 @@ def train_func(config: dict):
         report_to=cfg.logging.report_to,
         gradient_checkpointing=True,
         save_safetensors=True,
+        deepspeed=cfg.training.deepspeed, # 添加DeepSpeed配置
     )
 
     # 创建训练器
@@ -222,9 +242,19 @@ def train_func(config: dict):
         tokenizer=tokenizer,
     )
 
+    # -- 检查点恢复 --
+    resume_from_checkpoint = None
+    if cfg.training.get("ckpt"):
+        ckpt_path = cfg.training.ckpt
+        if os.path.isdir(ckpt_path):
+            print(f"从检查点恢复: {ckpt_path}")
+            resume_from_checkpoint = ckpt_path
+        else:
+            print(f"警告: 检查点路径不存在或不是一个目录: {ckpt_path}")
+
     # 开始训练
     print("开始训练...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     if ray.train.get_context().get_world_rank() == 0:
         # 保存最终模型
@@ -239,11 +269,29 @@ def train_func(config: dict):
         OmegaConf.save(cfg, f"{final_save_dir}/config.yaml")
 
         print(f"训练完成！模型已保存到 {final_save_dir}")
+        
+        # 结束WandB运行
+        wandb.finish()
 
 
 @hydra.main(version_base=None, config_path="train_config", config_name="train_config")
 def main(cfg: DictConfig):
     """主训练函数"""
+    # -- 动态生成运行名称 --
+    timestamp = datetime.now().strftime("%H%M%d%m%Y")
+    run_name_prefix = cfg.ray.get("run_name_prefix", "training_run")
+    run_name = f"{run_name_prefix}_{timestamp}"
+    print(f"Generated Run Name: {run_name}")
+
+    # -- WandB run ID --
+    # 为WandB创建一个唯一的运行ID，以便恢复
+    OmegaConf.set_struct(cfg, False)
+    if "wandb_run_id" not in cfg or cfg.wandb_run_id is None:
+        cfg.wandb_run_id = run_name # 使用run_name作为wandb_run_id
+    OmegaConf.set_struct(cfg, True)
+    print(f"WandB Run ID: {cfg.wandb_run_id}")
+
+
     ray_trainer = TorchTrainer(
         train_func,
         train_loop_config=OmegaConf.to_container(cfg, resolve=True),
@@ -254,8 +302,7 @@ def main(cfg: DictConfig):
             placement_strategy='PACK',
         ),
         run_config=ray.train.RunConfig(
-            name="dit_deepspeed",
-            # Add checkpointing configuration if needed
+            name=run_name,
         ),
     )
     result = ray_trainer.fit()
