@@ -3,25 +3,23 @@
 基于Hydra的DIT模型训练脚本
 """
 
+import os
+from datetime import datetime, timedelta
+
 import hydra
-import torch
-import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
-from transformers import AutoTokenizer, Trainer, TrainingArguments
 import ray
 import ray.train
-from ray.train.torch import TorchTrainer
-from ray.train import ScalingConfig
-from datetime import datetime
+import torch
+import torch.nn as nn
 import wandb
-import os
-
 from model.backbone.diffusion_scheduler import DITDiffusionScheduler
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
 from model.dataloader.DataPipe import load_and_preprocess_data
-
-
+from omegaconf import DictConfig, OmegaConf
+from ray.train import ScalingConfig
+from ray.train.torch import TorchTrainer
+from transformers import AutoTokenizer, Trainer, TrainingArguments
 
 
 class DITDataCollator:
@@ -167,14 +165,14 @@ def train_func(config: dict):
     # -- 初始化WandB --
     # 只有主工作节点（rank 0）才应该初始化和上传
     if ray.train.get_context().get_world_rank() == 0:
-        run_id = cfg.get("wandb_run_id") # 从配置中获取run_id
+        run_id = cfg.get("wandb_run_id")  # 从配置中获取run_id
         wandb.init(
             project="D2PLM",
             config=config,
             name=ray.train.get_context().get_experiment_name(),
             id=run_id,
-            resume="allow", # 允许恢复运行
-            reinit=True
+            resume="allow",  # 允许恢复运行
+            reinit=True,
         )
 
     # 设置随机种子
@@ -205,12 +203,10 @@ def train_func(config: dict):
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
         max_grad_norm=cfg.training.max_grad_norm,
-        
         # 优化器和学习率调度器
         optim=cfg.training.optim,
         lr_scheduler_type=cfg.training.lr_scheduler_type,
         warmup_ratio=cfg.training.warmup_ratio,
-
         # 日志、保存和评估
         logging_steps=cfg.training.logging_steps,
         save_steps=cfg.training.save_steps,
@@ -219,18 +215,16 @@ def train_func(config: dict):
         save_strategy=cfg.checkpointing.save_strategy,
         save_total_limit=cfg.training.save_total_limit,
         load_best_model_at_end=cfg.training.load_best_model_at_end,
-
         # 系统和数据加载
         dataloader_num_workers=cfg.system.dataloader_num_workers,
         fp16=cfg.system.mixed_precision == "fp16",
-        
         # 其他
         remove_unused_columns=False,
         push_to_hub=False,
         report_to=cfg.logging.report_to,
         gradient_checkpointing=True,
         save_safetensors=True,
-        deepspeed=cfg.training.deepspeed, # 添加DeepSpeed配置
+        deepspeed=cfg.training.deepspeed,  # 添加DeepSpeed配置
     )
 
     # 创建训练器
@@ -269,7 +263,7 @@ def train_func(config: dict):
         OmegaConf.save(cfg, f"{final_save_dir}/config.yaml")
 
         print(f"训练完成！模型已保存到 {final_save_dir}")
-        
+
         # 结束WandB运行
         wandb.finish()
 
@@ -278,7 +272,7 @@ def train_func(config: dict):
 def main(cfg: DictConfig):
     """主训练函数"""
     # -- 动态生成运行名称 --
-    timestamp = datetime.now().strftime("%H%M%d%m%Y")
+    timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%d%m%Y")
     run_name_prefix = cfg.ray.get("run_name_prefix", "training_run")
     run_name = f"{run_name_prefix}_{timestamp}"
     print(f"Generated Run Name: {run_name}")
@@ -287,10 +281,9 @@ def main(cfg: DictConfig):
     # 为WandB创建一个唯一的运行ID，以便恢复
     OmegaConf.set_struct(cfg, False)
     if "wandb_run_id" not in cfg or cfg.wandb_run_id is None:
-        cfg.wandb_run_id = run_name # 使用run_name作为wandb_run_id
+        cfg.wandb_run_id = run_name  # 使用run_name作为wandb_run_id
     OmegaConf.set_struct(cfg, True)
     print(f"WandB Run ID: {cfg.wandb_run_id}")
-
 
     ray_trainer = TorchTrainer(
         train_func,
@@ -299,7 +292,7 @@ def main(cfg: DictConfig):
             num_workers=cfg.ray.num_workers,
             resources_per_worker=cfg.ray.resources_per_worker,
             use_gpu=cfg.ray.use_gpu,
-            placement_strategy='PACK',
+            placement_strategy="PACK",
         ),
         run_config=ray.train.RunConfig(
             name=run_name,
