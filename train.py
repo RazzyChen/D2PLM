@@ -210,8 +210,6 @@ def train_func(config: dict):
         # 日志、保存和评估
         logging_steps=cfg.training.logging_steps,
         save_steps=cfg.training.save_steps,
-        eval_steps=cfg.training.eval_steps,
-        evaluation_strategy=cfg.evaluation.eval_strategy,
         save_strategy=cfg.checkpointing.save_strategy,
         save_total_limit=cfg.training.save_total_limit,
         load_best_model_at_end=cfg.training.load_best_model_at_end,
@@ -222,7 +220,6 @@ def train_func(config: dict):
         remove_unused_columns=False,
         push_to_hub=False,
         report_to=cfg.logging.report_to,
-        gradient_checkpointing=True,
         save_safetensors=True,
         deepspeed=cfg.training.deepspeed,  # 添加DeepSpeed配置
     )
@@ -272,7 +269,7 @@ def train_func(config: dict):
 def main(cfg: DictConfig):
     """主训练函数"""
     # -- 动态生成运行名称 --
-    timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%d%m%Y")
+    timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%m%d%Y")
     run_name_prefix = cfg.ray.get("run_name_prefix", "training_run")
     run_name = f"{run_name_prefix}_{timestamp}"
     print(f"Generated Run Name: {run_name}")
