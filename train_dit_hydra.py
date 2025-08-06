@@ -8,6 +8,10 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, Trainer, TrainingArguments
+import ray
+import ray.train.huggingface.transformers
+from ray.train.torch import TorchTrainer
+from ray.train import ScalingConfig
 
 from model.backbone.diffusion_scheduler import DITDiffusionScheduler
 from model.backbone.dit_config import DITConfig
@@ -88,7 +92,7 @@ def create_dit_model_and_tokenizer(cfg: DictConfig):
     """创建DIT模型和tokenizer"""
 
     # 加载tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.pretrained_model_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -151,10 +155,9 @@ def prepare_dataset(cfg: DictConfig, tokenizer):
     return dataset
 
 
-@hydra.main(version_base=None, config_path="train_config", config_name="train_config")
-def main(cfg: DictConfig):
-    """主训练函数"""
-
+def train_func(config: dict):
+    """Ray Train training function"""
+    cfg = OmegaConf.create(config)
     # 设置随机种子
     torch.manual_seed(cfg.system.seed)
 
@@ -182,27 +185,31 @@ def main(cfg: DictConfig):
         gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
-        warmup_steps=cfg.training.warmup_steps,
+        max_grad_norm=cfg.training.max_grad_norm,
+        
+        # 优化器和学习率调度器
+        optim=cfg.training.optim,
+        lr_scheduler_type=cfg.training.lr_scheduler_type,
+        warmup_ratio=cfg.training.warmup_ratio,
+
+        # 日志、保存和评估
         logging_steps=cfg.training.logging_steps,
         save_steps=cfg.training.save_steps,
         eval_steps=cfg.training.eval_steps,
+        evaluation_strategy=cfg.evaluation.eval_strategy,
+        save_strategy=cfg.checkpointing.save_strategy,
         save_total_limit=cfg.training.save_total_limit,
+        load_best_model_at_end=cfg.training.load_best_model_at_end,
+
+        # 系统和数据加载
         dataloader_num_workers=cfg.system.dataloader_num_workers,
+        fp16=cfg.system.mixed_precision == "fp16",
+        
+        # 其他
         remove_unused_columns=False,
         push_to_hub=False,
         report_to=cfg.logging.report_to,
-        # 优化设置
-        optim="adamw_torch",
-        fp16=cfg.system.mixed_precision == "fp16",
         gradient_checkpointing=True,
-        max_grad_norm=cfg.training.max_grad_norm,
-        # 评估设置
-        evaluation_strategy=cfg.evaluation.eval_strategy,
-        metric_for_best_model=cfg.training.metric_for_best_model,
-        greater_is_better=cfg.training.greater_is_better,
-        load_best_model_at_end=cfg.training.load_best_model_at_end,
-        # 保存设置
-        save_strategy=cfg.checkpointing.save_strategy,
         save_safetensors=True,
     )
 
@@ -219,20 +226,40 @@ def main(cfg: DictConfig):
     print("开始训练...")
     trainer.train()
 
-    # 保存最终模型
-    final_save_dir = f"{cfg.output.output_dir}/final_model"
-    trainer.save_model(final_save_dir)
-    tokenizer.save_pretrained(final_save_dir)
+    if ray.train.get_context().get_world_rank() == 0:
+        # 保存最终模型
+        final_save_dir = f"{cfg.output.output_dir}/final_model"
+        trainer.save_model(final_save_dir)
+        tokenizer.save_pretrained(final_save_dir)
 
-    # 保存调度器
-    scheduler.save_pretrained(final_save_dir)
+        # 保存调度器
+        scheduler.save_pretrained(final_save_dir)
 
-    # 保存配置
-    OmegaConf.save(cfg, f"{final_save_dir}/config.yaml")
+        # 保存配置
+        OmegaConf.save(cfg, f"{final_save_dir}/config.yaml")
 
-    print(f"训练完成！模型已保存到 {final_save_dir}")
+        print(f"训练完成！模型已保存到 {final_save_dir}")
 
-    return trainer, model, tokenizer, scheduler
+
+@hydra.main(version_base=None, config_path="train_config", config_name="train_config")
+def main(cfg: DictConfig):
+    """主训练函数"""
+    ray_trainer = TorchTrainer(
+        train_func,
+        train_loop_config=OmegaConf.to_container(cfg, resolve=True),
+        scaling_config=ScalingConfig(
+            num_workers=cfg.ray.num_workers,
+            resources_per_worker=cfg.ray.resources_per_worker,
+            use_gpu=cfg.ray.use_gpu,
+            placement_strategy='PACK',
+        ),
+        run_config=ray.train.RunConfig(
+            name="dit_deepspeed",
+            # Add checkpointing configuration if needed
+        ),
+    )
+    result = ray_trainer.fit()
+    print(f"Training result: {result}")
 
 
 if __name__ == "__main__":

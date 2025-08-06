@@ -1,13 +1,11 @@
-# DIT (Diffusion Transformer) 训练配置 - 2080 Super优化版本
-# 针对RTX 2080 Super优化，支持FP16，不支持BF16和Flash Attention
+# DIT (Diffusion Transformer) 训练配置 - v2 (Wandb, Fused AdamW, Custom LR Schedule)
 
-# 默认配置
 defaults:
   - _self_
 
-# 模型配置
+# 1. 模型配置 (DITConfig)
 model:
-  pretrained_model_name: "facebook/esm2_t33_650M_UR50D"
+  tokenizer: "facebook/esm2_t33_650M_UR50D"
   vocab_size: 25
   max_position_embeddings: 512
   hidden_size: 1024
@@ -20,7 +18,7 @@ model:
   layer_norm_eps: 1e-12
   initializer_range: 0.02
 
-# 扩散配置
+# 2. 扩散调度器配置 (DITDiffusionScheduler)
 diffusion:
   num_train_timesteps: 1000
   beta_start: 1e-4
@@ -29,88 +27,61 @@ diffusion:
   prediction_type: "epsilon"
   steps_offset: 0
 
-# 数据配置
+# 3. 数据配置 (DataPipe)
 data:
   lmdb_path: "./dataset"
   max_length: 512
-  batch_size: 8  # 2080 Super 8GB显存优化
-  num_workers: 4
-  pin_memory: true
-  prefetch_factor: 2
-  cache_dir: "./cache" 
+  batch_size: 8
+  cache_dir: "./cache"
 
-# 训练配置
+# 4. 训练核心配置 (TrainingArguments)
 training:
   num_epochs: 10
   learning_rate: 1e-4
   weight_decay: 0.01
-  warmup_steps: 1000
   max_grad_norm: 1.0
-  gradient_accumulation_steps: 4  # 有效batch_size = 8 * 4 = 32
+  gradient_accumulation_steps: 4
+  
+  # 优化器与学习率调度器
+  optim: "adamw_torch_fused" # 使用fused AdamW
+  lr_scheduler_type: "cosine" # 使用cosine衰减
+  warmup_ratio: 0.1 # 10%的训练步数用于warmup
+
+  # 保存、日志和评估频率
   save_steps: 5000
-  eval_steps: 1000
   logging_steps: 100
+  eval_steps: 1000
+  
+  # 检查点管理
   save_total_limit: 3
-  load_best_model_at_end: true
-  metric_for_best_model: "eval_loss"
-  greater_is_better: false
+  load_best_model_at_end: false # 放弃在训练结束时加载最佳模型
 
-# 优化器配置
-optimizer:
-  type: "adamw"
-  beta1: 0.9
-  beta2: 0.999
-  epsilon: 1e-8
-
-# 学习率调度器配置
-scheduler:
-  type: "cosine"
-  num_warmup_steps: 1000
-  num_training_steps: 100000
-
-# 系统配置
+# 5. 系统与环境配置
 system:
   device: "cuda"
-  use_swiglu: true
   seed: 42
-  mixed_precision: "fp16"  # 2080 Super支持FP16
-  dataloader_pin_memory: true
+  mixed_precision: "fp16"
   dataloader_num_workers: 4
 
-# 输出配置
+# 6. Ray - 分布式训练配置
+ray:
+  num_workers: 2
+  use_gpu: true
+  resources_per_worker:
+    CPU: 12
+    GPU: 1
+
+# 7. 输出与日志配置
 output:
   output_dir: "outputs/dit_model"
-  logging_dir: "outputs/logs"
-  run_name: "dit_training"
 
-# 评估配置
+logging:
+  report_to: ["wandb"] # 使用wandb记录日志
+  logging_strategy: "steps"
+
+# 8. 策略配置
 evaluation:
   eval_strategy: "steps"
-  eval_steps: 1000
-  eval_accumulation_steps: 4
-  eval_delay: 0
 
-# 检查点配置
 checkpointing:
   save_strategy: "steps"
-  save_steps: 5000
-  save_total_limit: 3
-  load_best_model_at_end: true
-
-# 日志配置
-logging:
-  logging_strategy: "steps"
-  logging_steps: 100
-  logging_first_step: true
-  logging_dir: "outputs/logs"
-  report_to: ["tensorboard"]
-
-# 生成配置
-generation:
-  num_inference_steps: 1000
-  guidance_scale: 1.0
-  num_samples: 10
-  max_length: 512
-  temperature: 1.0
-  top_p: 0.9
-  do_sample: true 
