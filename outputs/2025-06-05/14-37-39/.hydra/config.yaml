@@ -1,0 +1,39 @@
+wandb:
+  project: ESM2AE
+  resume: allow
+trainer:
+  output_dir: ./checkpoint
+  save_strategy: epoch
+  learning_rate: 5.0e-05
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  num_train_epochs: 100
+  seed: 42
+  data_seed: 42
+  dataloader_num_workers: 12
+  dataloader_prefetch_factor: 100
+  logging_dir: ./logs
+  tf32: true
+  bf16: true
+  push_to_hub: false
+  report_to: wandb
+  weight_decay: 0.0001
+  adam_beta2: 0.95
+  save_safetensors: true
+  greater_is_better: false
+  load_best_model_at_end: false
+  optim: adamw_torch_fused
+  gradient_accumulation_steps: 1
+  metric_for_best_model: mse
+  logging_steps: 10
+  warmup_ratio: 0.1
+  lr_scheduler_type: linear
+  save_total_limit: 10
+data:
+  train_path: data_test/train/
+  batch_size: 16
+model:
+  pretrained_model_name: facebook/esm2_t33_650M_UR50D
+  position_embedding_type: rotary
+  num_labels: 1
+  problem_type: regression
