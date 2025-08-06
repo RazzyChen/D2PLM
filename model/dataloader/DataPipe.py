@@ -184,13 +184,14 @@ def load_and_preprocess_data(
     # Determine number of processes for preprocessing
     if preprocessing_num_proc is None:
         try:
-            # Use available CPU resources from Ray
-            preprocessing_num_proc = min(
-                int(ray.get_runtime_context().get_assigned_resources().get("CPU", 4)),
-                8,  # Cap at 8 to avoid overwhelming the system
+            # 使用 Ray 分配的 CPU 资源
+            ray_cpus = int(
+                ray.get_runtime_context().get_assigned_resources().get("CPU", 0)
             )
-        except:
-            preprocessing_num_proc = 4
+            preprocessing_num_proc = ray_cpus if ray_cpus > 0 else 12
+        except Exception:
+            preprocessing_num_proc = 12
+        preprocessing_num_proc = 12
 
     print(f"Using {preprocessing_num_proc} processes for preprocessing")
 
