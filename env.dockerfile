@@ -24,3 +24,4 @@ RUN pip install --no-cache --break-system-packages -i https://mirrors.tuna.tsing
 WORKDIR /workspace/
 
 CMD ["/bin/bash"]
+ENV HF_ENDPOINT=https://hf-mirror.com
