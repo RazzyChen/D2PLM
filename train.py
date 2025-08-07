@@ -4,7 +4,6 @@
 """
 
 import os
-os.environ['TORCH_CUDA_ARCH_LIST'] = '8.0 8.6 8.9 9.0'
 from datetime import datetime, timedelta
 
 import hydra
@@ -59,8 +58,10 @@ class DITDataCollator:
 class DITTrainer(Trainer):
     """自定义DIT训练器"""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, pad_token_id=None, **kwargs):
         super().__init__(*args, **kwargs)
+        # 存储 pad_token_id 以便在 compute_loss 中使用
+        self.pad_token_id = pad_token_id
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """计算损失"""
@@ -84,7 +85,8 @@ class DITTrainer(Trainer):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
-        loss_fct = nn.CrossEntropyLoss(ignore_index=model.config.pad_token_id)
+        # 使用存储的 pad_token_id
+        loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
         loss = loss_fct(
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
         )
@@ -115,6 +117,14 @@ def create_dit_model_and_tokenizer(cfg: DictConfig):
         attention_probs_dropout_prob=cfg.model.attention_probs_dropout_prob,
         layer_norm_eps=cfg.model.layer_norm_eps,
         initializer_range=cfg.model.initializer_range,
+        pad_token_id=tokenizer.pad_token_id,  # 确保设置正确的 pad_token_id
+        mask_token_id=tokenizer.mask_token_id
+        if hasattr(tokenizer, "mask_token_id")
+        else 1,
+        cls_token_id=tokenizer.cls_token_id
+        if hasattr(tokenizer, "cls_token_id")
+        else 2,
+        eos_token_id=tokenizer.eos_token_id,
     )
 
     # 创建模型
@@ -192,7 +202,11 @@ def train_func(config: dict):
     dataset = prepare_dataset(cfg, tokenizer)
 
     # 创建数据整理器
-    data_collator = DITDataCollator(tokenizer, scheduler, tokenizer.mask_token_id)
+    data_collator = DITDataCollator(
+        tokenizer,
+        scheduler,
+        tokenizer.mask_token_id if hasattr(tokenizer, "mask_token_id") else 1,
+    )
 
     # 创建训练参数
     training_args = TrainingArguments(
@@ -224,12 +238,13 @@ def train_func(config: dict):
         deepspeed=cfg.training.deepspeed,  # 添加DeepSpeed配置
     )
 
-    # 创建训练器
+    # 创建训练器，传入 pad_token_id
     trainer = DITTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
         data_collator=data_collator,
+        pad_token_id=tokenizer.pad_token_id,  # 传入 pad_token_id
     )
 
     # -- 检查点恢复 --
