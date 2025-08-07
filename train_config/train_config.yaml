@@ -29,10 +29,10 @@ diffusion:
 
 # 3. 数据配置 (DataPipe)
 data:
-  lmdb_path: "/workspace/d2plm/dataset"
+  lmdb_path: "/workspace/dataset"
   max_length: 512
   batch_size: 16
-  cache_dir: "/workspace/d2plm/data_cache"
+  cache_dir: "/workspace/data_cache"
 
 # 4. 训练核心配置 (TrainingArguments)
 training:
@@ -55,7 +55,7 @@ training:
   # 检查点管理
   save_total_limit: 3
   load_best_model_at_end: false # 放弃在训练结束时加载最佳模型
-  deepspeed: "/workspace/d2plm/train_config/ZERO2.yaml" # DeepSpeed配置文件路径
+  deepspeed: "/workspace/train_config/ZERO2.json" # DeepSpeed配置文件路径
   ckpt: null # 手动指定检查点路径以恢复训练, e.g., "outputs/dit_model/checkpoint-5000"
 
 # 5. 系统与环境配置
@@ -76,7 +76,7 @@ ray:
 
 # 7. 输出与日志配置
 output:
-  output_dir: "/workspace/d2plm/outputs/dit_model"
+  output_dir: "/workspace/outputs/dit_model"
 
 logging:
   report_to: "wandb" # 使用wandb记录日志

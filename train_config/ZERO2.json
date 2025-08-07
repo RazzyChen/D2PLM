@@ -1,6 +1,3 @@
-# DeepSpeed Zero2 配置 - 2080 Super优化版本
-# 针对RTX 2080 Super 8GB显存优化，支持FP16，不支持BF16
-
 {
   "train_batch_size": 32,
   "gradient_accumulation_steps": 4,
