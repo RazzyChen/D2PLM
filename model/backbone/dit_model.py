@@ -247,7 +247,7 @@ class DITModel(PreTrainedModel):
             return tuple(v for v in output if v is not None)
 
         return BaseModelOutput(
-            last_hidden_state=logits,
+            last_hidden_state=sequence_output,
             hidden_states=all_hidden_states,
             attentions=None,
         )

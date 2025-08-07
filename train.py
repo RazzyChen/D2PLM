@@ -81,7 +81,8 @@ class DITTrainer(Trainer):
         )
 
         # 获取logits
-        logits = outputs.last_hidden_state
+        sequence_output = outputs.last_hidden_state
+        logits = model.lm_head(sequence_output)
 
         # 计算损失
         shift_logits = logits[..., :-1, :].contiguous()
