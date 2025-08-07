@@ -4,6 +4,7 @@
 """
 
 import os
+os.environ['TORCH_CUDA_ARCH_LIST'] = '8.0 8.6 8.9 9.0'
 from datetime import datetime, timedelta
 
 import hydra
@@ -61,7 +62,7 @@ class DITTrainer(Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """计算损失"""
         # 获取输入
         input_ids = inputs["input_ids"]
@@ -172,7 +173,6 @@ def train_func(config: dict):
             name=ray.train.get_context().get_experiment_name(),
             id=run_id,
             resume="allow",  # 允许恢复运行
-            reinit=True,
         )
 
     # 设置随机种子
@@ -230,7 +230,6 @@ def train_func(config: dict):
         args=training_args,
         train_dataset=dataset,
         data_collator=data_collator,
-        tokenizer=tokenizer,
     )
 
     # -- 检查点恢复 --

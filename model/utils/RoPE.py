@@ -77,7 +77,10 @@ class RotaryPositionalEmbedding(nn.Module):
         """
         if seq_len is None:
             seq_len = x.shape[1]
-            
+        if seq_len > self.max_seq_len:
+            x = x[:, :self.max_seq_len, ...]
+            seq_len = self.max_seq_len
+
         # 生成位置嵌入
         pos_emb = self.rotary_emb(seq_len, device=x.device)
         
