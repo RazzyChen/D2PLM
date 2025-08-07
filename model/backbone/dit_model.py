@@ -160,8 +160,8 @@ class DITModel(PreTrainedModel):
     def _get_sinusoidal_time_embedding(self, timesteps: torch.Tensor) -> torch.Tensor:
         half_dim = self.config.time_embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=timesteps.device) * -emb)
-        emb = timesteps[:, None].float() * emb[None, :]
+        emb = torch.exp(torch.arange(half_dim, device=timesteps.device, dtype=self.embeddings.weight.dtype) * -emb)
+        emb = timesteps[:, None].to(self.embeddings.weight.dtype) * emb[None, :]
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         if self.config.time_embedding_dim % 2 == 1:
             emb = torch.nn.functional.pad(emb, (0, 1))
