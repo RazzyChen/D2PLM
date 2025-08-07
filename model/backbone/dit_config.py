@@ -8,7 +8,7 @@ class DITConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size: int = 33,
+        vocab_size: int = 25,
         max_position_embeddings: int = 512,
         hidden_size: int = 1024,
         num_hidden_layers: int = 24,
