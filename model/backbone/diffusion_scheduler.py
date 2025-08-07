@@ -93,7 +93,7 @@ class DITDiffusionScheduler(SchedulerMixin, ConfigMixin):
         noisy_samples = original_samples.clone()
         noisy_samples[mask_condition] = mask_token_id
         
-        return noisy_samples
+        return noisy_samples, mask_condition
     
     def get_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """随机采样时间步"""

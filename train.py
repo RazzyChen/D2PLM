@@ -43,7 +43,7 @@ class DITDataCollator:
         timesteps = self.scheduler.get_timesteps(batch_size, input_ids.device)
 
         # 添加噪声
-        noisy_input_ids = self.scheduler.add_noise(
+        noisy_input_ids, noise_mask = self.scheduler.add_noise(
             input_ids, timesteps, self.mask_token_id
         )
 
@@ -52,6 +52,7 @@ class DITDataCollator:
             "attention_mask": attention_mask,
             "timesteps": timesteps,
             "labels": input_ids,  # 原始序列作为标签
+            "noise_mask": noise_mask,
         }
 
 
@@ -70,6 +71,7 @@ class DITTrainer(Trainer):
         attention_mask = inputs["attention_mask"]
         timesteps = inputs["timesteps"]
         labels = inputs["labels"]
+        noise_mask = inputs["noise_mask"]
 
         # 前向传播
         outputs = model(
@@ -84,11 +86,17 @@ class DITTrainer(Trainer):
         # 计算损失
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
+        
+        # 只计算被mask的位置的损失
+        shift_noise_mask = noise_mask[..., 1:].contiguous()
 
         # 使用存储的 pad_token_id
         loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
+        
+        # Flatten the tokens
         loss = loss_fct(
-            shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+            shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)], 
+            shift_labels.view(-1)[shift_noise_mask.view(-1)]
         )
 
         return (loss, outputs) if return_outputs else loss
