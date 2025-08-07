@@ -32,13 +32,6 @@ class DITAttention(nn.Module):
             dim=self.head_dim, max_seq_len=config.max_position_embeddings
         )
 
-    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
-        return (
-            tensor.view(bsz, seq_len, self.num_attention_heads, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
-
     def forward(
         self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
@@ -48,17 +41,32 @@ class DITAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        query_states = self._shape(query_states, q_len, bsz)
-        key_states = self._shape(key_states, q_len, bsz)
-        value_states = self._shape(value_states, q_len, bsz)
+        # 重塑为适合 RoPE 的形状 [bsz, seq_len, num_heads, head_dim]
+        query_states = query_states.view(
+            bsz, q_len, self.num_attention_heads, self.head_dim
+        )
+        key_states = key_states.view(
+            bsz, q_len, self.num_attention_heads, self.head_dim
+        )
+        value_states = value_states.view(
+            bsz, q_len, self.num_attention_heads, self.head_dim
+        )
 
+        # 应用 RoPE 位置编码
         query_states = self.rope(query_states)
         key_states = self.rope(key_states)
 
+        # 转换为 attention 需要的形状 [bsz, num_heads, seq_len, head_dim]
+        query_states = query_states.transpose(1, 2).contiguous()
+        key_states = key_states.transpose(1, 2).contiguous()
+        value_states = value_states.transpose(1, 2).contiguous()
+
+        # 执行 attention 计算
         attn_output = F.scaled_dot_product_attention(
             query_states, key_states, value_states, attn_mask=attention_mask
         )
 
+        # 转换回输出形状并投影
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
@@ -75,17 +83,25 @@ class DITEncoderLayer(nn.Module):
             SwiGLU(),
             nn.Linear(config.intermediate_size, self.hidden_size),
         )
-        self.norm1 = nn.LayerNorm(self.hidden_size, elementwise_affine=False, eps=config.layer_norm_eps)
-        self.norm2 = nn.LayerNorm(self.hidden_size, elementwise_affine=False, eps=config.layer_norm_eps)
+        self.norm1 = nn.LayerNorm(
+            self.hidden_size, elementwise_affine=False, eps=config.layer_norm_eps
+        )
+        self.norm2 = nn.LayerNorm(
+            self.hidden_size, elementwise_affine=False, eps=config.layer_norm_eps
+        )
         self.adaLN_modulation = nn.Sequential(
-            SwiGLU(),
-            nn.Linear(self.hidden_size, 6 * self.hidden_size, bias=True)
+            SwiGLU(), nn.Linear(self.hidden_size, 6 * self.hidden_size, bias=True)
         )
 
     def forward(
-        self, hidden_states: torch.Tensor, t_emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
+        self,
+        hidden_states: torch.Tensor,
+        t_emb: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(t_emb).chunk(6, dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(t_emb).chunk(6, dim=1)
+        )
 
         # Attention block
         residual = hidden_states
@@ -120,27 +136,30 @@ class DITModel(PreTrainedModel):
             SwiGLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
         )
-        
+
         self.layers = nn.ModuleList(
             [DITEncoderLayer(config) for _ in range(config.num_hidden_layers)]
         )
-        
-        self.final_layer_norm = nn.LayerNorm(self.hidden_size, elementwise_affine=False, eps=config.layer_norm_eps)
+
+        self.final_layer_norm = nn.LayerNorm(
+            self.hidden_size, elementwise_affine=False, eps=config.layer_norm_eps
+        )
         self.final_layer_adaLN_modulation = nn.Sequential(
-            SwiGLU(),
-            nn.Linear(self.hidden_size, 2 * self.hidden_size, bias=True)
+            SwiGLU(), nn.Linear(self.hidden_size, 2 * self.hidden_size, bias=True)
         )
         self.lm_head = nn.Linear(self.hidden_size, config.vocab_size, bias=False)
 
         self.init_weights()
-        
+
     def init_weights(self):
         nn.init.normal_(self.embeddings.weight, mean=0.0, std=0.02)
+
         def _init_weights(module):
             if isinstance(module, nn.Linear):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+
         self.apply(_init_weights)
 
         for layer in self.layers:
@@ -160,7 +179,12 @@ class DITModel(PreTrainedModel):
     def _get_sinusoidal_time_embedding(self, timesteps: torch.Tensor) -> torch.Tensor:
         half_dim = self.config.time_embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=timesteps.device, dtype=self.embeddings.weight.dtype) * -emb)
+        emb = torch.exp(
+            torch.arange(
+                half_dim, device=timesteps.device, dtype=self.embeddings.weight.dtype
+            )
+            * -emb
+        )
         emb = timesteps[:, None].to(self.embeddings.weight.dtype) * emb[None, :]
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         if self.config.time_embedding_dim % 2 == 1:
@@ -177,9 +201,13 @@ class DITModel(PreTrainedModel):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutput]:
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if inputs_embeds is None:
             inputs_embeds = self.embeddings(input_ids)
@@ -201,7 +229,7 @@ class DITModel(PreTrainedModel):
 
         shift, scale = self.final_layer_adaLN_modulation(t_emb).chunk(2, dim=1)
         sequence_output = modulate(self.final_layer_norm(hidden_states), shift, scale)
-        
+
         logits = self.lm_head(sequence_output)
 
         if not return_dict:
