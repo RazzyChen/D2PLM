@@ -52,7 +52,7 @@ class DITAttention(nn.Module):
             bsz, q_len, self.num_attention_heads, self.head_dim
         )
 
-        # 应用 RoPE 位置编码
+        # 应用 RoPE 位置编码 - 现在输入输出都是 [bsz, seq_len, num_heads, head_dim]
         query_states = self.rope(query_states)
         key_states = self.rope(key_states)
 
@@ -60,6 +60,16 @@ class DITAttention(nn.Module):
         query_states = query_states.transpose(1, 2).contiguous()
         key_states = key_states.transpose(1, 2).contiguous()
         value_states = value_states.transpose(1, 2).contiguous()
+
+        # 处理 attention_mask - 如果存在的话，需要正确的形状
+        if attention_mask is not None:
+            # attention_mask 应该是 [bsz, seq_len] 或 [bsz, 1, seq_len, seq_len]
+            if attention_mask.dim() == 2:
+                # 扩展为 [bsz, 1, 1, seq_len] 用于 scaled_dot_product_attention
+                attention_mask = attention_mask.unsqueeze(1).unsqueeze(1)
+                # 转换为适合 attention 的格式 (0 表示 attend, -inf 表示 mask)
+                attention_mask = attention_mask.to(dtype=query_states.dtype)
+                attention_mask = (1.0 - attention_mask) * torch.finfo(query_states.dtype).min
 
         # 执行 attention 计算
         attn_output = F.scaled_dot_product_attention(

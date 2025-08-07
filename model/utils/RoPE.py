@@ -23,7 +23,7 @@ class RotaryEmbedding(nn.Module):
             max_seq_len: 最大序列长度
             device: 设备
         Returns:
-            旋转位置嵌入张量
+            旋转位置嵌入张量 [seq_len, dim]
         """
         seq = torch.arange(max_seq_len, device=device, dtype=self.inv_freq.dtype)
         freqs = einsum("i,j->ij", seq, self.inv_freq)
@@ -47,11 +47,14 @@ def apply_rotary_pos_emb(pos, t):
     """
     应用旋转位置嵌入
     Args:
-        pos: 位置嵌入
-        t: 输入张量
+        pos: 位置嵌入 [seq_len, head_dim]
+        t: 输入张量 [batch_size, num_heads, seq_len, head_dim]
     Returns:
         应用了旋转位置嵌入的张量
     """
+    # 将pos扩展到与t相同的形状
+    # pos: [seq_len, head_dim] -> [1, 1, seq_len, head_dim]
+    pos = pos.unsqueeze(0).unsqueeze(0)
     return (t * pos.cos()) + (rotate_half(t) * pos.sin())
 
 
@@ -71,9 +74,8 @@ class RotaryPositionalEmbedding(nn.Module):
         前向传播
         Args:
             x: 输入张量 [batch_size, seq_len, num_heads, head_dim]
-            seq_len: 序列长度，如果为None则使用x的序列长度
         Returns:
-            应用了RoPE的张量
+            应用了RoPE的张量 [batch_size, seq_len, num_heads, head_dim]
         """
         if seq_len is None:
             seq_len = x.shape[1]
@@ -81,8 +83,14 @@ class RotaryPositionalEmbedding(nn.Module):
             x = x[:, :self.max_seq_len, ...]
             seq_len = self.max_seq_len
 
-        # 生成位置嵌入
+        # 生成位置嵌入 [seq_len, head_dim]
         pos_emb = self.rotary_emb(seq_len, device=x.device)
         
+        # 转换x的形状以便应用RoPE: [batch, seq, heads, head_dim] -> [batch, heads, seq, head_dim]
+        x_reshaped = x.transpose(1, 2)
+        
         # 应用旋转位置嵌入
-        return apply_rotary_pos_emb(pos_emb, x) 
+        x_with_rope = apply_rotary_pos_emb(pos_emb, x_reshaped)
+        
+        # 转换回原始形状: [batch, heads, seq, head_dim] -> [batch, seq, heads, head_dim]
+        return x_with_rope.transpose(1, 2)
