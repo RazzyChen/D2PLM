@@ -7,7 +7,7 @@ defaults:
 model:
   tokenizer: "facebook/esm2_t33_650M_UR50D"
   vocab_size: 33
-  max_position_embeddings: 512
+  max_position_embeddings: 1024
   hidden_size: 1024
   num_hidden_layers: 24
   num_attention_heads: 16
@@ -15,7 +15,7 @@ model:
   time_embedding_dim: 256
   hidden_dropout_prob: 0
   attention_probs_dropout_prob: 0
-  layer_norm_eps: 1e-12
+  layer_norm_eps: 1e-5
   initializer_range: 0.02
 
 # 2. 扩散调度器配置 (DITDiffusionScheduler)
@@ -30,17 +30,17 @@ diffusion:
 # 3. 数据配置 (DataPipe)
 data:
   lmdb_path: "/workspace/d2plm/dataset"
-  max_length: 512
-  batch_size: 16
+  max_length: 1024
+  batch_size: 8
   cache_dir: "/workspace/d2plm/data_cache"
 
 # 4. 训练核心配置 (TrainingArguments)
 training:
-  num_epochs: 10
-  learning_rate: 1e-4
+  num_epochs: 2
+  learning_rate: 5e-5
   weight_decay: 0.01
-  max_grad_norm: 1.0
-  gradient_accumulation_steps: 4
+  max_grad_norm: 0.0
+  gradient_accumulation_steps: 32
   
   # 优化器与学习率调度器
   optim: "adamw_torch_fused" # 使用fused AdamW
@@ -48,14 +48,13 @@ training:
   warmup_ratio: 0.1 # 10%的训练步数用于warmup
 
   # 保存、日志和评估频率
-  save_steps: 5000
-  logging_steps: 100
-  eval_steps: 1000
+  save_steps: 500
+  logging_steps: 25
   
   # 检查点管理
-  save_total_limit: 3
-  load_best_model_at_end: false # 放弃在训练结束时加载最佳模型
-  deepspeed: "/workspace/d2plm/train_config/ZERO2.yaml" # DeepSpeed配置文件路径
+  save_total_limit: 20
+  load_best_model_at_end: false 
+  deepspeed: "/workspace/d2plm/train_config/ZERO2.json" # DeepSpeed配置文件路径
   ckpt: null # 手动指定检查点路径以恢复训练, e.g., "outputs/dit_model/checkpoint-5000"
 
 # 5. 系统与环境配置
@@ -63,7 +62,7 @@ system:
   device: "cuda"
   seed: 42
   mixed_precision: "fp16"
-  dataloader_num_workers: 4
+  dataloader_num_workers: 11
 
 # 6. Ray - 分布式训练配置
 ray:
@@ -71,7 +70,7 @@ ray:
   num_workers: 2
   use_gpu: true
   resources_per_worker:
-    CPU: 11
+    CPU: 23
     GPU: 1
 
 # 7. 输出与日志配置
