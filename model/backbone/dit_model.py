@@ -91,6 +91,8 @@ class DITEncoderLayer(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_size, config.intermediate_size),
             SwiGLU(),
+            nn.Linear(config.intermediate_size, config.intermediate_size),
+            SwiGLU(),
             nn.Linear(config.intermediate_size, self.hidden_size),
         )
         self.norm1 = nn.LayerNorm(

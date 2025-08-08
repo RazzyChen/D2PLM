@@ -225,7 +225,6 @@ def train_func(config: dict):
         gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
-        max_grad_norm=cfg.training.max_grad_norm,
         # 优化器和学习率调度器
         optim=cfg.training.optim,
         lr_scheduler_type=cfg.training.lr_scheduler_type,
