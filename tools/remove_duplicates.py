@@ -2,21 +2,21 @@ import pandas as pd
 import sys
 
 def remove_duplicates(input_file, output_file):
-    # 读取 CSV 文件
+    # Read the CSV file
     df = pd.read_csv(input_file)
     
-    # 去重 'sequence' 列，保留第一次出现的值
+    # Remove duplicates from the 'sequence' column, keeping the first occurrence
     df_unique = df.drop_duplicates(subset=['sequence'], keep='first')
     
-    # 保存去重后的数据到新的 CSV 文件
+    # Save the deduplicated data to a new CSV file
     df_unique.to_csv(output_file, index=False)
     
-    print(f"去重完成，新的文件已保存为: {output_file}")
+    print(f"Deduplication complete, the new file has been saved as: {output_file}")
 
 if __name__ == "__main__":
-    # 获取命令行参数
+    # Get command line arguments
     if len(sys.argv) != 3:
-        print("用法: python remove_duplicates.py <输入文件> <输出文件>")
+        print("Usage: python remove_duplicates.py <input_file> <output_file>")
     else:
         input_file = sys.argv[1]
         output_file = sys.argv[2]

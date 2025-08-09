@@ -55,12 +55,12 @@ from Bio import SeqIO
 from tqdm import tqdm
 
 # ==============================================================================
-#  解析器函数 (生产者部分，保持不变)
+#  Parser functions (producer part, unchanged)
 # ==============================================================================
 
 
 def get_sequence_count_mmap(fasta_file: str, lmdb_file: str) -> int:
-    """使用 mmap 快速统计序列数量"""
+    """Fast sequence counting using mmap"""
     meta_file = os.path.splitext(lmdb_file)[0] + ".meta.json"
     if os.path.exists(meta_file):
         try:
@@ -140,11 +140,11 @@ def read_fasta_in_chunks_mmap(fasta_file: str, chunk_size: int):
         yield chunk
 
 
-# --- SeqIO 版本 ---
+# --- SeqIO version ---
 
 
 def get_sequence_count_seqio(fasta_file: str, lmdb_file: str) -> int:
-    """使用 Bio.SeqIO 统计序列数量"""
+    """Count sequences using Bio.SeqIO"""
     meta_file = os.path.splitext(lmdb_file)[0] + ".meta.json"
     if os.path.exists(meta_file):
         try:
@@ -192,7 +192,7 @@ def read_fasta_in_chunks_seqio(fasta_file: str, total_sequences: int, chunk_size
 
 
 # ==============================================================================
-#  新架构：生产者 -> 工作者 -> 写入器
+#  New architecture: Producer -> Worker -> Writer
 # ==============================================================================
 
 
@@ -202,11 +202,11 @@ def producer(
     chunk_size: int,
     num_workers: int,
     use_seqio: bool,
-    total_sequences: int,  # 仅在 use_seqio=True 时需要
+    total_sequences: int,  # Only needed when use_seqio=True
 ):
     """
-    生产者：读取FASTA文件，创建数据块，并将其放入任务队列。
-    与原版基本相同，只是向 'num_workers' 发送终止信号。
+    Producer: Reads the FASTA file, creates data chunks, and puts them into the task queue.
+    Basically the same as the original version, just sends a termination signal to 'num_workers'.
     """
     parser_mode = "SeqIO" if use_seqio else "mmap"
     print(f"[Producer] Starting to read FASTA (mode: {parser_mode})...")
@@ -222,7 +222,7 @@ def producer(
         task_queue.put((i, chunk))
 
     print("[Producer] All chunks have been put into the queue.")
-    # 发送终止信号给所有工作者进程
+    # Send termination signals to all worker processes
     for _ in range(num_workers):
         task_queue.put(None)
     print("[Producer] Sent termination signals to workers. Exiting.")
@@ -230,27 +230,27 @@ def producer(
 
 def worker_process(task_queue: mp.Queue, result_queue: mp.Queue):
     """
-    工作者：从任务队列获取数据块，进行处理（编码），
-    然后将准备好的键值对列表放入结果队列。
-    **此进程不执行任何磁盘写入操作。**
+    Worker: Gets data chunks from the task queue, processes them (encodes),
+    and then puts the list of prepared key-value pairs into the result queue.
+    **This process does not perform any disk write operations.**
     """
     while True:
         task = task_queue.get()
         if task is None:
-            # 工作完成，退出循环
-            result_queue.put(None)  # 发送终止信号给writer
+            # Job done, exit the loop
+            result_queue.put(None)  # Send termination signal to writer
             break
 
         _chunk_id, chunk_data = task
 
-        # 在内存中准备好要写入的数据
+        # Prepare the data to be written in memory
         records_to_write = []
         for idx, record_id, sequence in chunk_data:
             key = f"{idx}".encode("utf-8")
             value = json.dumps({"id": record_id, "sequence": sequence}).encode("utf-8")
             records_to_write.append((key, value))
 
-        # 将处理好的数据块放入结果队列
+        # Put the processed data chunk into the result queue
         result_queue.put(records_to_write)
 
 
@@ -258,12 +258,12 @@ def writer_process(
     result_queue: mp.Queue, lmdb_file: str, total_sequences: int, num_workers: int
 ):
     """
-    写入器：一个专门的进程，负责从结果队列获取数据，
-    并将其批量写入最终的LMDB文件。
-    **这是唯一与最终LMDB文件交互的进程。**
+    Writer: A dedicated process responsible for getting data from the result queue
+    and batch writing it to the final LMDB file.
+    **This is the only process that interacts with the final LMDB file.**
     """
     print("[Writer] Process started, waiting for data...")
-    # 使用优化参数打开最终的LMDB文件
+    # Open the final LMDB file with optimized parameters
     env = lmdb.open(
         lmdb_file,
         map_size=27 * 1024 * 1024 * 1024,  # 27GB
@@ -277,18 +277,18 @@ def writer_process(
     with tqdm(total=total_sequences, desc="Writing to LMDB", unit="seq") as pbar:
         while workers_done < num_workers:
             try:
-                results_chunk = result_queue.get(timeout=120)  # 设置超时以防万一
+                results_chunk = result_queue.get(timeout=120)  # Set a timeout just in case
                 if results_chunk is None:
                     workers_done += 1
                     continue
 
-                # 使用事务批量写入数据
+                # Batch write data using a transaction
                 with env.begin(write=True) as txn:
-                    # 使用 putmulti 以获得最佳性能
+                    # Use putmulti for best performance
                     cursor = txn.cursor()
                     cursor.putmulti(results_chunk)
 
-                # 更新进度条
+                # Update the progress bar
                 update_amount = len(results_chunk)
                 processed_count += update_amount
                 pbar.update(update_amount)
@@ -296,11 +296,11 @@ def writer_process(
                 print(
                     "[Writer] Warning: Result queue was empty for 120 seconds. Check for worker errors."
                 )
-                # 如果所有序列都已处理，则可以安全退出
+                # If all sequences have been processed, it's safe to exit
                 if processed_count >= total_sequences:
                     break
 
-    # 确保进度条达到100%
+    # Make sure the progress bar reaches 100%
     if pbar.n < total_sequences:
         pbar.n = total_sequences
         pbar.refresh()
@@ -310,19 +310,19 @@ def writer_process(
 
 
 # ==============================================================================
-#  主协调函数
+#  Main coordination function
 # ==============================================================================
 
 
 def fasta_to_lmdb(
     fasta_file, lmdb_file, num_processes=None, chunk_size=50000, use_seqio=False
 ):
-    """主协调函数，采用 生产者 -> 工作者 -> 写入器 架构。"""
+    """Main coordination function, using Producer -> Worker -> Writer architecture."""
     if num_processes is None:
-        # 留一个核心给生产者和写入器
+        # Leave one core for the producer and writer
         num_processes = max(1, mp.cpu_count() - 1)
 
-    # 如果lmdb文件已存在，先删除，避免追加写入
+    # If the lmdb file already exists, delete it first to avoid appending
     if os.path.exists(lmdb_file):
         shutil.rmtree(lmdb_file)
         print(f"Removed existing LMDB database: {lmdb_file}")
@@ -334,7 +334,7 @@ def fasta_to_lmdb(
     print(f"Parser mode: {parser_mode}")
     print("-------------------------------------------------------")
 
-    # 1. 计数
+    # 1. Count
     if use_seqio:
         total_sequences = get_sequence_count_seqio(fasta_file, lmdb_file)
     else:
@@ -344,13 +344,13 @@ def fasta_to_lmdb(
         print("No sequences found. Exiting.")
         return
 
-    # 2. 创建进程和队列
+    # 2. Create processes and queues
     with mp.Manager() as manager:
         task_queue = manager.Queue(maxsize=num_processes * 2)
         result_queue = manager.Queue(maxsize=num_processes * 2)
 
-        # 3. 启动所有进程
-        # 启动生产者
+        # 3. Start all processes
+        # Start the producer
         producer_proc = mp.Process(
             target=producer,
             args=(
@@ -364,21 +364,21 @@ def fasta_to_lmdb(
         )
         producer_proc.start()
 
-        # 启动唯一的写入器
+        # Start the single writer
         writer_proc = mp.Process(
             target=writer_process,
             args=(result_queue, lmdb_file, total_sequences, num_processes),
         )
         writer_proc.start()
 
-        # 启动工作者池
+        # Start the worker pool
         worker_procs = []
         for _ in range(num_processes):
             p = mp.Process(target=worker_process, args=(task_queue, result_queue))
             p.start()
             worker_procs.append(p)
 
-        # 4. 等待所有进程完成
+        # 4. Wait for all processes to complete
         producer_proc.join()
         print("[Main] Producer has finished.")
 

@@ -58,11 +58,11 @@ def analyze_sequences(df: pd.DataFrame, pbar: tqdm = None) -> Dict[str, Any]:
 
 def analyze_length_distribution(lengths: List[int]) -> Dict[str, Any]:
     """Analyze the distribution of sequence lengths."""
-    # 计算分位数
+    # Calculate percentiles
     percentiles = [0, 1, 5, 10, 25, 50, 75, 90, 95, 99, 100]
     percentile_values = np.percentile(lengths, percentiles)
     
-    # 创建长度区间统计
+    # Create length interval statistics
     bins = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, float('inf')]
     bin_labels = [f"{bins[i]}-{bins[i+1]-1}" for i in range(len(bins)-2)]
     bin_labels.append(f"≥{bins[-2]}")
@@ -70,7 +70,7 @@ def analyze_length_distribution(lengths: List[int]) -> Dict[str, Any]:
     hist, _ = np.histogram(lengths, bins=bins)
     distribution = dict(zip(bin_labels, hist))
     
-    # 计算百分比
+    # Calculate percentages
     total_sequences = len(lengths)
     distribution_percentage = {
         bin_label: (count/total_sequences * 100) 

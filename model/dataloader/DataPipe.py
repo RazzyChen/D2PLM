@@ -161,17 +161,17 @@ def load_and_preprocess_data(
     lmdb_path: str,
     tokenizer: AutoTokenizer,
     cache_dir: str,
-    max_length: int = 512,  # Reduced from 700 for better performance
+    max_length: int = 512,
     batch_size: int = 1000,
     preprocessing_num_proc: int = None,
 ) -> Dataset:
     """
-    Optimized data loading and preprocessing with better caching and parallel processing.
+    Loads a pre-processed LMDB dataset, tokenizes it, and caches it.
     """
     # Create cache directory if it doesn't exist
     os.makedirs(os.path.dirname(cache_dir), exist_ok=True)
 
-    # Check for cached dataset
+    # Check for cached tokenized dataset
     if os.path.exists(cache_dir):
         print(f"Loading tokenized dataset from cache: {cache_dir}")
         return Dataset.load_from_disk(cache_dir)
@@ -183,52 +183,46 @@ def load_and_preprocess_data(
 
     if preprocessing_num_proc is None:
         try:
-            # 使用 Ray 分配的 CPU 资源
-            ray_cpus = int(
-                ray.get_runtime_context().get_assigned_resources().get("CPU", 0)
-            )
-            preprocessing_num_proc = ray_cpus
+            ray_cpus = int(ray.get_runtime_context().get_assigned_resources().get("CPU", 0))
+            preprocessing_num_proc = ray_cpus if ray_cpus > 0 else 4
         except Exception:
             preprocessing_num_proc = 4
 
-    print(f"Using {preprocessing_num_proc} processes for preprocessing")
-
-    # Load dataset with optimized generator
     with suppress_output(is_main_worker=(rank == 0)):
+        print(f"Using {preprocessing_num_proc} processes for preprocessing")
+
+        # Load dataset with optimized generator
         start_time = time.time()
-        train_dataset = Dataset.from_generator(
+        dataset = Dataset.from_generator(
             _dataset_generator_optimized,
             gen_kwargs={"mdb_file_path": lmdb_path, "batch_size": batch_size},
         )
         load_time = time.time() - start_time
-        if rank == 0:
-            print(f"Dataset loading completed in {load_time:.2f} seconds")
+        print(f"Dataset loading from {lmdb_path} completed in {load_time:.2f} seconds")
 
-    # Optimized preprocessing with better parameters
-    start_time = time.time()
-    tokenized_train_dataset = train_dataset.map(
-        lambda examples: _optimized_preprocess_function(
-            examples, tokenizer, max_length
-        ),
-        batched=True,
-        batch_size=2000,  # Larger batch size for better throughput
-        remove_columns=train_dataset.column_names,
-        desc="Tokenizing dataset (optimized)",
-        disable_nullable=(rank != 0),
-        num_proc=preprocessing_num_proc,
-        writer_batch_size=1000,  # Optimize write batch size
-    )
-
-    tokenization_time = time.time() - start_time
-    if rank == 0:
+        # Optimized preprocessing
+        start_time = time.time()
+        tokenized_dataset = dataset.map(
+            lambda examples: _optimized_preprocess_function(
+                examples, tokenizer, max_length
+            ),
+            batched=True,
+            batch_size=2000,
+            remove_columns=dataset.column_names,
+            desc=f"Tokenizing dataset from {lmdb_path}",
+            disable_nullable=(rank != 0),
+            num_proc=preprocessing_num_proc,
+            writer_batch_size=1000,
+        )
+        tokenization_time = time.time() - start_time
         print(f"Tokenization completed in {tokenization_time:.2f} seconds")
 
-    # Save to cache on main process only
-    if rank == 0:
-        print(f"Saving tokenized dataset to cache: {cache_dir}")
-        tokenized_train_dataset.save_to_disk(cache_dir, num_proc=preprocessing_num_proc)
+        # Save to cache on main process only
+        if rank == 0:
+            print(f"Saving tokenized dataset to cache: {cache_dir}")
+            tokenized_dataset.save_to_disk(cache_dir, num_proc=preprocessing_num_proc)
 
-    return tokenized_train_dataset
+    return tokenized_dataset
 
 
 # Legacy function for backward compatibility

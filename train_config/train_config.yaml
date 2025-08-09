@@ -29,33 +29,37 @@ diffusion:
 
 # 3. 数据配置 (DataPipe)
 data:
-  lmdb_path: "/workspace/d2plm/dataset"
+  train_lmdb_path: "/workspace/d2plm/prepared_dataset/train_lmdb"
+  val_lmdb_path: "/workspace/d2plm/prepared_dataset/validation_lmdb"
+  train_cache_dir: "/workspace/d2plm/data_cache/train"
+  val_cache_dir: "/workspace/d2plm/data_cache/validation"
   max_length: 1024
   batch_size: 8
-  cache_dir: "/workspace/d2plm/data_cache"
 
 # 4. 训练核心配置 (TrainingArguments)
 training:
-  num_epochs: 2
-  learning_rate: 5e-5
+  max_steps: 150000
+  learning_rate: 4e-4
   weight_decay: 0.01
   max_grad_norm: 0.0
   gradient_accumulation_steps: 32
   
   # 优化器与学习率调度器
-  optim: "adamw_torch_fused" # 使用fused AdamW
-  lr_scheduler_type: "cosine" # 使用cosine衰减
-  warmup_ratio: 0.1 # 10%的训练步数用于warmup
+  optim: "adamw_torch_fused"
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1
 
   # 保存、日志和评估频率
   save_steps: 500
   logging_steps: 25
+  evaluation_strategy: "steps"
+  eval_steps: 500
   
   # 检查点管理
   save_total_limit: 20
   load_best_model_at_end: false 
-  deepspeed: "/workspace/d2plm/train_config/ZERO2.json" # DeepSpeed配置文件路径
-  ckpt: null # 手动指定检查点路径以恢复训练, e.g., "outputs/dit_model/checkpoint-5000"
+  deepspeed: "/workspace/d2plm/train_config/ZERO2.json"
+  ckpt: null
 
 # 5. 系统与环境配置
 system:
@@ -82,7 +86,7 @@ logging:
   logging_strategy: "steps"
 
 # WandB specific configuration
-wandb:
+wabdb:
   project: "D2PLM_DiT"
   entity: null # Replace with your wandb entity if needed
 

@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-基于Hydra的DIT模型训练脚本
-"""
 
 import os
 from datetime import datetime, timedelta
@@ -20,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from ray.train import ScalingConfig
 from ray.train.torch import TorchTrainer
 from transformers import AutoTokenizer, Trainer, TrainingArguments
+from torchmetrics.text import Perplexity
 
 
 class DITDataCollator:
@@ -163,19 +161,27 @@ def create_diffusion_scheduler(cfg: DictConfig):
 
 def prepare_dataset(cfg: DictConfig, tokenizer):
     """准备数据集"""
-    print("加载和预处理数据...")
-
-    # 加载数据集
-    dataset = load_and_preprocess_data(
-        cfg.data.lmdb_path,
-        tokenizer,
+    print("--- Loading Training Dataset ---")
+    train_dataset = load_and_preprocess_data(
+        lmdb_path=cfg.data.train_lmdb_path,
+        tokenizer=tokenizer,
+        cache_dir=cfg.data.train_cache_dir,
         max_length=cfg.data.max_length,
         batch_size=cfg.data.batch_size,
-        cache_dir=cfg.data.cache_dir,
     )
+    print(f"Training set size: {len(train_dataset)}")
 
-    print(f"数据集大小: {len(dataset)}")
-    return dataset
+    print("\n--- Loading Validation Dataset ---")
+    eval_dataset = load_and_preprocess_data(
+        lmdb_path=cfg.data.val_lmdb_path,
+        tokenizer=tokenizer,
+        cache_dir=cfg.data.val_cache_dir,
+        max_length=cfg.data.max_length,
+        batch_size=cfg.data.batch_size,
+    )
+    print(f"Validation set size: {len(eval_dataset)}")
+    
+    return train_dataset, eval_dataset
 
 
 def train_func(config: dict):
@@ -208,7 +214,7 @@ def train_func(config: dict):
     scheduler = create_diffusion_scheduler(cfg)
 
     # 准备数据集
-    dataset = prepare_dataset(cfg, tokenizer)
+    train_dataset, eval_dataset = prepare_dataset(cfg, tokenizer)
 
     # 创建数据整理器
     data_collator = DITDataCollator(
@@ -217,11 +223,27 @@ def train_func(config: dict):
         tokenizer.mask_token_id if hasattr(tokenizer, "mask_token_id") else 1,
     )
 
+    # 定义评估指标
+    perplexity = Perplexity(ignore_index=tokenizer.pad_token_id).to(device)
+
+    def compute_metrics(eval_preds):
+        logits, labels = eval_preds
+        logits = torch.from_numpy(logits).to(device)
+        labels = torch.from_numpy(labels).to(device)
+
+        # 根据模型内部的损失计算方式对齐
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        ppl = perplexity(shift_logits, shift_labels)
+        return {"perplexity": ppl.item()}
+
     # 创建训练参数
     training_args = TrainingArguments(
         output_dir=cfg.output.output_dir,
-        num_train_epochs=cfg.training.num_epochs,
+        max_steps=cfg.training.max_steps,
         per_device_train_batch_size=cfg.data.batch_size,
+        per_device_eval_batch_size=cfg.data.batch_size,
         gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
@@ -229,13 +251,13 @@ def train_func(config: dict):
         optim=cfg.training.optim,
         lr_scheduler_type=cfg.training.lr_scheduler_type,
         warmup_ratio=cfg.training.warmup_ratio,
-        # 日志、保存和评估
         logging_steps=cfg.training.logging_steps,
         save_steps=cfg.training.save_steps,
+        evaluation_strategy=cfg.training.evaluation_strategy,
+        eval_steps=cfg.training.eval_steps,
         save_strategy=cfg.checkpointing.save_strategy,
         save_total_limit=cfg.training.save_total_limit,
         load_best_model_at_end=cfg.training.load_best_model_at_end,
-        # 系统和数据加载
         dataloader_num_workers=cfg.system.dataloader_num_workers,
         fp16=cfg.system.mixed_precision == "fp16",
         # 其他
@@ -250,8 +272,10 @@ def train_func(config: dict):
     trainer = DITTrainer(
         model=model,
         args=training_args,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
+        compute_metrics=compute_metrics,
         pad_token_id=tokenizer.pad_token_id,  # 传入 pad_token_id
     )
 
