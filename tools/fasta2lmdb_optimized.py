@@ -183,9 +183,9 @@ def get_optimal_chunk_size() -> int:
     return chunk_size
 
 
-def get_sequence_count_ultra_fast(fasta_file: str, lmdb_file: str) -> int:
+def get_sequence_count_ultra_fast(fasta_file: str, lmdb_path: str) -> int:
     """Ultra-fast sequence counting with caching."""
-    meta_file = os.path.splitext(lmdb_file)[0] + ".meta.json"
+    meta_file = os.path.splitext(lmdb_path)[0] + ".meta.json"
     
     # Check cache first
     if os.path.exists(meta_file):
@@ -334,14 +334,14 @@ def worker_process_optimized(task_queue: mp.Queue, result_queue: mp.Queue):
 
 def writer_process_optimized(
     result_queue: mp.Queue,
-    lmdb_file: str,
+    lmdb_path: str,
     total_sequences: int,
     num_workers: int
 ):
     """Optimized writer process with advanced batching."""
     print("[Writer] Starting optimized LMDB writer...")
     
-    with AdvancedLMDBWriter(lmdb_file) as writer:
+    with AdvancedLMDBWriter(lmdb_path) as writer:
         processed_count = 0
         workers_done = 0
         batch_buffer = []
@@ -386,7 +386,7 @@ def writer_process_optimized(
 
 def fasta_to_lmdb_optimized(
     fasta_file: str,
-    lmdb_file: str,
+    lmdb_path: str,
     num_processes: int = None,
     chunk_size: int = None,
     use_seqio: bool = False
@@ -401,15 +401,15 @@ def fasta_to_lmdb_optimized(
         chunk_size = get_optimal_chunk_size()
     
     # Remove existing database
-    if os.path.exists(lmdb_file):
-        shutil.rmtree(lmdb_file)
-        print(f"Removed existing LMDB database: {lmdb_file}")
+    if os.path.exists(lmdb_path):
+        shutil.rmtree(lmdb_path)
+        print(f"Removed existing LMDB database: {lmdb_path}")
     
     print("=" * 70)
     print("ULTRA-HIGH-PERFORMANCE FASTA TO LMDB CONVERTER v2.0")
     print("=" * 70)
     print(f"Input file: {fasta_file}")
-    print(f"Output LMDB: {lmdb_file}")
+    print(f"Output LMDB: {lmdb_path}")
     print(f"Worker processes: {num_processes}")
     print(f"Chunk size: {chunk_size:,}")
     print(f"Parser mode: {'SeqIO (robust)' if use_seqio else 'Optimized mmap (ultra-fast)'}")
@@ -421,7 +421,7 @@ def fasta_to_lmdb_optimized(
     if use_seqio:
         total_sequences = sum(1 for _ in SeqIO.parse(fasta_file, "fasta"))
     else:
-        total_sequences = get_sequence_count_ultra_fast(fasta_file, lmdb_file)
+        total_sequences = get_sequence_count_ultra_fast(fasta_file, lmdb_path)
     
     if total_sequences == 0:
         print("No sequences found. Exiting.")
@@ -441,7 +441,7 @@ def fasta_to_lmdb_optimized(
         
         writer_proc = mp.Process(
             target=writer_process_optimized,
-            args=(result_queue, lmdb_file, total_sequences, num_processes)
+            args=(result_queue, lmdb_path, total_sequences, num_processes)
         )
         writer_proc.start()
         
@@ -466,7 +466,7 @@ def fasta_to_lmdb_optimized(
     print(f"Total sequences processed: {total_sequences:,}")
     print(f"Total time: {total_time:.2f} seconds")
     print(f"Average throughput: {throughput:.0f} sequences/second")
-    print(f"Database size: {os.path.getsize(lmdb_file) / 1024**2 if os.path.exists(lmdb_file) else 0:.1f} MB")
+    print(f"Database size: {os.path.getsize(lmdb_path) / 1024**2 if os.path.exists(lmdb_path) else 0:.1f} MB")
     print("=" * 70)
 
 
@@ -477,20 +477,20 @@ def main():
         epilog="""
 Examples:
   # Basic usage with auto-optimization
-  python fasta2lmdb_optimized.py --fasta_file data.fasta --lmdb_file data.lmdb
+  python fasta2lmdb_optimized.py --fasta_file data.fasta --lmdb_path data.lmdb
   
   # Custom performance tuning
-  python fasta2lmdb_optimized.py --fasta_file data.fasta --lmdb_file data.lmdb \\
+  python fasta2lmdb_optimized.py --fasta_file data.fasta --lmdb_path data.lmdb \\
     --processes 16 --chunk_size 50000
   
   # Fallback to robust mode for problematic files
-  python fasta2lmdb_optimized.py --fasta_file data.fasta --lmdb_file data.lmdb \\
+  python fasta2lmdb_optimized.py --fasta_file data.fasta --lmdb_path data.lmdb \\
     --use_seqio
         """
     )
     
     parser.add_argument("--fasta_file", type=str, required=True, help="Input FASTA file path")
-    parser.add_argument("--lmdb_file", type=str, required=True, help="Output LMDB file path")
+    parser.add_argument("--lmdb_path", type=str, required=True, help="Output LMDB file path")
     parser.add_argument("--processes", type=int, default=None, help="Number of worker processes (auto-detected)")
     parser.add_argument("--chunk_size", type=int, default=None, help="Sequences per chunk (auto-optimized)")
     parser.add_argument("--use_seqio", action="store_true", help="Use Bio.SeqIO parser (slower but more robust)")
@@ -506,7 +506,7 @@ Examples:
     try:
         fasta_to_lmdb_optimized(
             args.fasta_file,
-            args.lmdb_file,
+            args.lmdb_path,
             args.processes,
             args.chunk_size,
             args.use_seqio
