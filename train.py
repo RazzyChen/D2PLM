@@ -259,7 +259,8 @@ def train_func(config: dict):
         save_total_limit=cfg.training.save_total_limit,
         load_best_model_at_end=cfg.training.load_best_model_at_end,
         dataloader_num_workers=cfg.system.dataloader_num_workers,
-        fp16=cfg.system.mixed_precision == "fp16",
+        dataloader_prefetch_factor=cfg.system.dataloader_prefetch_factor,
+        fp16=cfg.system.mixed_precision,
         # 其他
         remove_unused_columns=False,
         push_to_hub=False,

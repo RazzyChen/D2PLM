@@ -66,7 +66,8 @@ system:
   device: "cuda"
   seed: 42
   mixed_precision: "fp16"
-  dataloader_num_workers: 11
+  dataloader_prefetch_factor: 128
+  dataloader_num_workers: 23
 
 # 6. Ray - 分布式训练配置
 ray:
