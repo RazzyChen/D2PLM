@@ -38,11 +38,11 @@ data:
 
 # 4. 训练核心配置 (TrainingArguments)
 training:
-  max_steps: 150000
+  max_steps: 160000
   learning_rate: 4e-4
   weight_decay: 0.01
   max_grad_norm: 0.0
-  gradient_accumulation_steps: 32
+  gradient_accumulation_steps: 48
   
   # 优化器与学习率调度器
   optim: "adamw_torch_fused"
@@ -51,12 +51,12 @@ training:
 
   # 保存、日志和评估频率
   save_steps: 500
-  logging_steps: 25
+  logging_steps: 125
   evaluation_strategy: "steps"
   eval_steps: 500
   
   # 检查点管理
-  save_total_limit: 20
+  save_total_limit: 50
   load_best_model_at_end: false 
   deepspeed: "/workspace/d2plm/train_config/ZERO2.json"
   ckpt: null
