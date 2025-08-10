@@ -116,7 +116,7 @@ class OptimizedSequenceParser:
 class AdvancedLMDBWriter:
     """Advanced LMDB writer with optimized batch processing."""
     
-    def __init__(self, lmdb_path: str, map_size: int = 50 * 1024**3):  # 50GB default
+    def __init__(self, lmdb_path: str, map_size: int = 1 * 1024**3):  # 50GB default
         self.lmdb_path = lmdb_path
         self.map_size = map_size
         self.env = None
@@ -186,6 +186,11 @@ def get_optimal_chunk_size() -> int:
 def get_sequence_count_ultra_fast(fasta_file: str, lmdb_path: str) -> int:
     """Ultra-fast sequence counting with caching."""
     meta_file = os.path.splitext(lmdb_path)[0] + ".meta.json"
+    
+    # Ensure the directory exists for the meta file
+    meta_dir = os.path.dirname(meta_file)
+    if meta_dir and not os.path.exists(meta_dir):
+        os.makedirs(meta_dir, exist_ok=True)
     
     # Check cache first
     if os.path.exists(meta_file):
