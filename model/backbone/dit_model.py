@@ -89,9 +89,9 @@ class DITEncoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = DITAttention(config)
         self.mlp = nn.Sequential(
-            nn.Linear(self.hidden_size, config.intermediate_size),
+            nn.Linear(self.hidden_size, config.intermediate_size * 2),
             SwiGLU(),
-            nn.Linear(config.intermediate_size, config.intermediate_size),
+            nn.Linear(config.intermediate_size, config.intermediate_size * 2),
             SwiGLU(),
             nn.Linear(config.intermediate_size, self.hidden_size),
         )
@@ -144,9 +144,9 @@ class DITModel(PreTrainedModel):
             config.vocab_size, self.hidden_size, padding_idx=config.pad_token_id
         )
         self.time_embedding = nn.Sequential(
-            nn.Linear(self.config.time_embedding_dim, self.hidden_size),
+            nn.Linear(self.config.time_embedding_dim, self.hidden_size * 2),
             SwiGLU(),
-            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.Linear(self.hidden_size, self.hidden_size * 2),
         )
 
         self.layers = nn.ModuleList(
