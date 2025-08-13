@@ -1,21 +1,31 @@
 # D2PLM: A Protein Language Model
 
-This project provides a protein language model based on the Denoising Diffusion Probabilistic Model (D3PM) framework, implemented using Hugging Face's Transformers and Diffusers libraries. The model uses an Absorbing Diffusion mechanism to generate novel protein sequences that conform to biological rules.
+This project provides a protein language model with **dual training paradigms**: traditional **Diffusion** and modern **Flow Matching** approaches. Both systems are implemented using Hugging Face's Transformers and Diffusers libraries and use absorbing state mechanisms to generate novel protein sequences that conform to biological rules.
+
+## 🔥 New: Dual Training Paradigms
+
+D2PLM now supports **two completely independent training systems**:
+
+- **🌊 Flow Matching**: Based on Discrete Absorbing Flow Matching (arXiv:2407.15595v2) - A modern, efficient alternative to diffusion
+- **🎯 Diffusion**: Traditional discrete diffusion with absorbing states
+
+Both systems are **completely separated** with no shared dependencies, allowing you to choose the approach that best fits your research needs.
 
 ## Project Overview
 
 ### Core Technologies
-- **Hugging Face Integration**: Built entirely on the Transformers and Diffusers frameworks.
-- **Hydra Configuration**: Utilizes Hydra for flexible and powerful configuration management.
-- **SwiGLU Activation**: Employs the optimized SwiGLU activation function.
-- **RoPE Positional Embedding**: Uses Rotary Position Embedding for better positional awareness.
-- **Absorbing Diffusion**: Leverages an absorbing state discrete diffusion model for sequence generation.
-- **Transformer Architecture**: A 10-layer Transformer encoder with a 1024-dimensional hidden state.
-- **ESM-2 Tokenizer**: Reuses the tokenizer from ESM-2 for protein sequences.
-- **UniRef50 Dataset**: Trained on the standard, redundancy-reduced UniRef50 protein sequence dataset.
-- **FSDP + Accelerate**: Modern distributed training with PyTorch's native FullyShardedDataParallel and Hugging Face Accelerate.
-- **EMA Training**: Exponential Moving Average for enhanced model stability and performance.
-- **Modular Architecture**: Clean separation of trainer logic and main orchestration.
+- **🤗 Hugging Face Integration**: Built entirely on the Transformers and Diffusers frameworks
+- **⚙️ Hydra Configuration**: Flexible and powerful configuration management for both paradigms
+- **🚀 SwiGLU Activation**: Optimized activation function with improved initialization
+- **🔄 RoPE Positional Embedding**: Rotary Position Embedding for better positional awareness
+- **🌊 Flow Matching**: Discrete Absorbing Flow Matching (arXiv:2407.15595v2) implementation
+- **🎯 Absorbing Diffusion**: Traditional discrete diffusion with absorbing states
+- **🏗️ Transformer Architecture**: DIT (Diffusion Transformer) with optimized design
+- **🧬 ESM-2 Tokenizer**: Protein-specific tokenization from ESM-2
+- **📊 UniRef50 Dataset**: Standard redundancy-reduced protein sequence dataset
+- **⚡ FSDP + Accelerate**: Modern distributed training with PyTorch native parallelism
+- **📈 EMA Training**: Exponential Moving Average for enhanced stability and performance
+- **🔧 Modular Architecture**: Completely separated systems for maximum flexibility
 
 ### Model Specifications
 - **Total Parameters**: ~450M (24 layers)
@@ -33,28 +43,46 @@ This project provides a protein language model based on the Denoising Diffusion 
 D2PLM/
 ├── model/
 │   ├── backbone/
-│   │   ├── dit_config.py         # DIT model configuration
-│   │   ├── dit_model.py          # DIT model implementation (with RoPE)
-│   │   ├── diffusion_scheduler.py # Diffusion scheduler
+│   │   ├── dit_config.py               # DIT model configuration
+│   │   ├── dit_model.py                # DIT model implementation (with RoPE + einops)
+│   │   ├── diffusion_scheduler.py      # Diffusion scheduler
+│   │   ├── flow_matching_scheduler.py  # 🌊 Flow Matching scheduler
 │   │   └── __init__.py
 │   ├── trainer/
-│   │   ├── DITTrainer.py         # Modularized trainer with EMA support
+│   │   ├── DITTrainer.py              # 🎯 Pure Diffusion trainer with EMA
+│   │   ├── FMTrainer.py               # 🌊 Pure Flow Matching trainer with EMA
 │   │   └── __init__.py
 │   ├── dataloader/
-│   │   └── DataPipe.py           # Accelerate-compatible data loading
+│   │   └── DataPipe.py                # Accelerate-compatible data loading
 │   └── utils/
-│       ├── ActivationFunction.py # SwiGLU activation function
-│       ├── RoPE.py              # RoPE implementation
-│       ├── ModelSave.py          # Model saving utility
-│       └── MyLRCallback.py       # Learning rate monitoring callback
+│       ├── ActivationFunction.py      # SwiGLU activation function
+│       ├── RoPE.py                    # RoPE implementation
+│       ├── ModelSave.py               # Model saving utility
+│       └── MyLRCallback.py            # Learning rate monitoring callback
 ├── tools/
-│   └── prepare_dataset.py      # Data preprocessing script
+│   └── prepare_dataset.py           # Data preprocessing script
 ├── train_config/
-│   └── train_config.yaml         # FSDP + Accelerate training configuration
-├── train.py                      # Main training script (Accelerate-based)
-├── Claude.md                     # Refactoring documentation
-└── README.md                     # This file
+│   ├── train_config.yaml             # 🎯 Diffusion training configuration
+│   └── FM_train_config.yaml          # 🌊 Flow Matching training configuration
+├── train.py                          # 🎯 Diffusion training script
+├── fm_train.py                       # 🌊 Flow Matching training script
+├── Claude.md                         # Refactoring documentation
+└── README.md                         # This file
 ```
+
+### 🔄 Training System Architecture
+
+The project now features **two completely independent training systems**:
+
+#### 🎯 Diffusion System
+- **Files**: `train.py` + `train_config.yaml` + `DITTrainer.py`
+- **Scheduler**: `diffusion_scheduler.py`
+- **Approach**: Traditional discrete diffusion with absorbing states
+
+#### 🌊 Flow Matching System
+- **Files**: `fm_train.py` + `FM_train_config.yaml` + `FMTrainer.py`  
+- **Scheduler**: `flow_matching_scheduler.py`
+- **Approach**: Discrete Absorbing Flow Matching (arXiv:2407.15595v2)
 
 ## Installation and Setup
 
@@ -120,7 +148,9 @@ data:
 
 #### 2. Run Training
 
-With your datasets prepared and your configuration pointing to them, you can start the training process. The training is managed by Hydra, allowing for flexible configuration.
+With your datasets prepared and your configuration pointing to them, you can choose between **two training paradigms**. Both systems are managed by Hydra for flexible configuration.
+
+### 🎯 Diffusion Training
 
 **For Single GPU Training:**
 ```bash
@@ -140,52 +170,109 @@ accelerate launch train.py
 ```
 
 **Override configuration on the command line:**
-For example, to change the learning rate and number of steps:
 ```bash
 accelerate launch train.py training.learning_rate=2e-4 training.max_steps=100000
 ```
 
-**Use custom config file:**
+### 🌊 Flow Matching Training
+
+**For Single GPU Training:**
 ```bash
-accelerate launch train.py --config_name custom_config
+python fm_train.py
 ```
 
-**Training Features:**
-The new training architecture includes several enhancements:
-- **FSDP Integration**: Automatic memory optimization with PyTorch's native FullyShardedDataParallel
-- **EMA Training**: Exponential Moving Average for enhanced model stability and performance  
-- **Async Data Pipeline**: Overlapped data loading and computation for maximum GPU utilization
-- **Modular Design**: Clean separation between trainer logic (`model/trainer/`) and main orchestration
+**For Multi-GPU Training with FSDP + Accelerate:**
+```bash
+accelerate launch fm_train.py
+```
+
+**Override Flow Matching configuration:**
+```bash
+accelerate launch fm_train.py training.learning_rate=4e-4 flow_matching.num_flow_steps=50
+```
+
+**Use custom config file for either system:**
+```bash
+# For Diffusion
+accelerate launch train.py --config_name train_config
+
+# For Flow Matching  
+accelerate launch fm_train.py --config_name FM_train_config
+```
+
+### ⚡ Quick Comparison
+
+| Feature | 🎯 Diffusion | 🌊 Flow Matching |
+|---------|-------------|------------------|
+| **Training Script** | `train.py` | `fm_train.py` |
+| **Config File** | `train_config.yaml` | `FM_train_config.yaml` |
+| **Scheduler** | Traditional discrete diffusion | Discrete absorbing flow matching |
+| **Loss Function** | Shifted cross-entropy on corrupted tokens | Direct prediction on corrupted tokens |
+| **WandB Project** | `D2PLM_DiT_FSDP` | `D2PLM_FlowMatching_Pure` |
+| **Output Directory** | `/workspace/d2plm/weight` | `/workspace/d2plm/weight_flow_matching` |
+
+### 🚀 Enhanced Training Features
+
+Both training systems include several performance enhancements:
+
+- **⚡ FSDP Integration**: Automatic memory optimization with PyTorch's native FullyShardedDataParallel
+- **📈 EMA Training**: Exponential Moving Average for enhanced model stability and performance  
+- **🔄 Async Data Pipeline**: Overlapped data loading and computation for maximum GPU utilization
+- **🔧 Modular Design**: Clean separation between trainer logic and main orchestration
+- **🎯 Independent Systems**: Zero shared dependencies between diffusion and flow matching
+- **📊 Separate Tracking**: Independent WandB projects and output directories
+- **⚙️ Flexible Configuration**: Hydra-based config management with runtime overrides
 
 
 
 ## Configuration Details
 
-- **`train_config.yaml`**: Contains all major configurations for the model architecture, diffusion process, training loop (learning rate, batch size, optimizer), and system settings. Now streamlined for FSDP + Accelerate workflow.
-- **Accelerate Config**: Hardware-specific distributed training configuration managed by `accelerate config` command.
+### 🎯 Diffusion Configuration
+- **`train_config.yaml`**: Pure diffusion training configuration including model architecture, diffusion scheduler parameters, training hyperparameters, and system settings
+- **Features**: Traditional discrete diffusion with absorbing states, shifted cross-entropy loss
 
-### Architecture Improvements
+### 🌊 Flow Matching Configuration  
+- **`FM_train_config.yaml`**: Pure flow matching configuration with specialized flow parameters, independent WandB project settings, and optimized hyperparameters
+- **Features**: Discrete absorbing flow matching, direct token prediction loss, cosine flow schedule
 
-The training system has been refactored with the following improvements:
+### ⚙️ System Configuration
+- **Accelerate Config**: Hardware-specific distributed training configuration managed by `accelerate config` command
+- **Shared Components**: Both systems use the same model architecture (DIT) and data pipeline, but with completely separate training logic
 
-**Modular Design:**
-- **`model/trainer/DITTrainer.py`**: Contains the specialized trainer with EMA support and custom loss calculation
-- **`train.py`**: Simplified main script focused on orchestration
-- **Accelerate Integration**: Native PyTorch FSDP replaces Ray + DeepSpeed for better maintainability
+## 🔄 Recent Updates & Architecture
 
-**Performance Optimizations:**
-- **EMA (Exponential Moving Average)**: Integrated into the trainer for enhanced stability
-- **Async Data Pipeline**: `dataloader_pin_memory=True` and `non_blocking=True` for overlapped data transfer
-- **FSDP Memory Optimization**: Dynamic sharding strategy configured via Accelerate
+### v2.0: Dual Training Paradigms (Latest)
+
+**Major Additions:**
+- **🌊 Flow Matching System**: Complete implementation of Discrete Absorbing Flow Matching based on arXiv:2407.15595v2
+- **🎯 Pure Separation**: Zero shared dependencies between diffusion and flow matching systems  
+- **📁 Dual Architecture**: Independent trainers, configs, and scripts for each paradigm
+- **📊 Enhanced Tracking**: Separate WandB projects and output directories
+
+**Technical Improvements:**
+- **🔧 Modular Design**: 
+  - `DITTrainer.py`: Pure diffusion trainer with EMA and custom loss
+  - `FMTrainer.py`: Pure flow matching trainer with independent implementation
+- **⚡ Performance Optimizations**:
+  - Einops integration for cleaner tensor operations
+  - Optimized initialization strategy based on DiT paper recommendations
+  - Enhanced EMA implementation for both systems
+- **🚀 FSDP + Accelerate**: Native PyTorch FSDP replaces Ray + DeepSpeed
 
 ### Migration Notes
 
-If upgrading from the previous Ray + DeepSpeed version:
+**From v1.x (Ray + DeepSpeed):**
+1. **Dependencies**: Ray removed, Accelerate required for multi-GPU training
+2. **Launch Commands**: 
+   - Diffusion: `accelerate launch train.py`
+   - Flow Matching: `accelerate launch fm_train.py`
+3. **Configuration**: Two independent config files with specialized parameters
+4. **Architecture**: Complete separation allows choosing training paradigm independently
 
-1. **Dependencies**: Ray dependencies removed, Accelerate required for multi-GPU training
-2. **Launch Command**: Use `accelerate launch train.py` instead of Ray-based commands  
-3. **Configuration**: Config structure streamlined (see `Claude.md` for detailed migration guide)
-4. **Trainer Logic**: Now modularized in `model/trainer/` for better code organization
+**System Requirements:**
+- PyTorch 2.0+ for native FSDP support
+- Hugging Face Accelerate for distributed training
+- Diffusers library for EMA and training utilities
 
 ## Contributing
 

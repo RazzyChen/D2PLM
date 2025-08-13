@@ -85,6 +85,3 @@ wabdb:
 checkpointing:
   save_strategy: "steps"
 
-# 7. Scheduler Selection (Default: Traditional Diffusion)
-scheduler:
-  use_flow_matching_scheduler: false  # Set to true to use Flow Matching

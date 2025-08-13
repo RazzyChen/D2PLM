@@ -1,10 +1,11 @@
-# DIT (Diffusion Transformer) Training Configuration - Flow Matching Edition
-# Based on Discrete Flow Matching (arXiv:2407.15595v2)
+# Flow Matching Training Configuration - Pure Flow Matching System
+# D2PLM Protein Language Model with Discrete Absorbing Flow Matching
+# Based on arXiv:2407.15595v2 - Completely Independent from Diffusion
 
 defaults:
   - _self_
 
-# 1. Model Configuration (Unchanged)
+# 1. Model Architecture Configuration
 model:
   tokenizer: "facebook/esm2_t33_650M_UR50D"
   vocab_size: 33
@@ -19,47 +20,47 @@ model:
   layer_norm_eps: 1e-5
   initializer_range: 0.02
 
-# 2. Flow Matching Scheduler Configuration (New!)
+# 2. Flow Matching Configuration (Core Parameters)
 flow_matching:
   num_flow_steps: 100
   flow_schedule: "cosine"  # Options: 'linear', 'cosine', 'sigmoid'
-  min_flow_time: 1e-5
-  max_flow_time: 1.0
+  min_flow_time: 1e-5     # Minimum flow time (near clean data)
+  max_flow_time: 1.0      # Maximum flow time (fully corrupted)
 
-# 3. Data Configuration (Unchanged)
+# 3. Dataset Configuration
 data:
   train_lmdb_path: "/workspace/d2plm/prepared_dataset/train_lmdb"
   val_lmdb_path: "/workspace/d2plm/prepared_dataset/validation_lmdb"
   train_cache_dir: "/workspace/d2plm/data_cache/train"
   val_cache_dir: "/workspace/d2plm/data_cache/validation"
   max_length: 1024
-  batch_size: 8 # Note: This is per_device_train_batch_size
+  batch_size: 8 # per_device_train_batch_size for flow matching
 
-# 4. Core Training Configuration (for TrainingArguments)
+# 4. Training Arguments Configuration
 training:
   max_steps: 160000
   learning_rate: 4e-4
   weight_decay: 0.01
   gradient_accumulation_steps: 48
   
-  # Optimizer and LR Scheduler
+  # Optimizer and Learning Rate Scheduler
   optim: "adamw_torch_fused"
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.1
 
-  # Saving, Logging, and Evaluation Frequency
+  # Checkpoint and Evaluation Strategy
   save_strategy: "steps"
   save_steps: 500
   logging_steps: 125
   evaluation_strategy: "steps"
   eval_steps: 500
   
-  # Checkpoint Management
+  # Model Checkpoint Management
   save_total_limit: 50
   load_best_model_at_end: false
-  ckpt: null # Retain for checkpoint resumption
+  ckpt: null # For resuming from checkpoint
 
-# 5. System and Environment Configuration
+# 5. System Configuration
 system:
   device: "cuda"
   seed: 42
@@ -67,7 +68,7 @@ system:
   dataloader_prefetch_factor: 128
   dataloader_num_workers: 23
 
-# 6. Weight Output and Logging Configuration
+# 6. Output and Logging Configuration
 weight:
   output_dir: "/workspace/d2plm/weight_flow_matching"
 
@@ -75,15 +76,12 @@ logging:
   report_to: "wandb"
   logging_strategy: "steps"
 
-# WandB specific configuration
+# 7. WandB Configuration for Flow Matching
 wabdb:
-  project: "D2PLM_DiT_FlowMatching"
+  project: "D2PLM_FlowMatching_Pure"
   entity: null
-  run_name_prefix: "D2PLM_FM" # For dynamic run name generation
+  run_name_prefix: "D2PLM_FM"
 
+# 8. Checkpointing Strategy
 checkpointing:
   save_strategy: "steps"
-
-# 7. CRUCIAL: Scheduler Selection (This is the key parameter!)
-scheduler:
-  use_flow_matching_scheduler: true  # Set to false to use traditional diffusion

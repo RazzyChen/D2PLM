@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Flow Matching Training Script - Completely Independent from Diffusion
+# Based on Discrete Absorbing Flow Matching (arXiv:2407.15595v2)
 
 import argparse
 import os
@@ -10,12 +12,11 @@ import torch
 import wandb
 import numpy as np
 from accelerate import Accelerator
-from model.backbone.diffusion_scheduler import DITDiffusionScheduler
+from model.backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
 from model.dataloader.DataPipe import load_and_preprocess_data
-# Import the newly modularized Trainer and DataCollator
-from model.trainer.DITTrainer import DITDataCollator, DITTrainer
+from model.trainer.FMTrainer import FMDataCollator, FMTrainer
 from omegaconf import DictConfig, OmegaConf
 from torchmetrics.text import Perplexity
 from transformers import AutoTokenizer, TrainingArguments, PreTrainedModel, PreTrainedTokenizer
@@ -23,7 +24,7 @@ from datasets import Dataset
 
 
 def create_dit_model_and_tokenizer(cfg: DictConfig):
-    """Create DIT model and tokenizer"""
+    """Create DIT model and tokenizer for flow matching training"""
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer)
@@ -67,22 +68,22 @@ def create_dit_model_and_tokenizer(cfg: DictConfig):
     return model, tokenizer, config
 
 
-def create_diffusion_scheduler(cfg: DictConfig):
-    """Create diffusion scheduler"""
-    print("Creating Diffusion Scheduler...")
-    scheduler = DITDiffusionScheduler(
-        num_train_timesteps=cfg.diffusion.num_train_timesteps,
-        beta_start=cfg.diffusion.beta_start,
-        beta_end=cfg.diffusion.beta_end,
-        beta_schedule=cfg.diffusion.beta_schedule,
-        prediction_type=cfg.diffusion.prediction_type,
-        steps_offset=cfg.diffusion.steps_offset,
+def create_flow_matching_scheduler(cfg: DictConfig, model_config):
+    """Create flow matching scheduler"""
+    print("Creating Flow Matching Scheduler...")
+    scheduler = DiscreteAbsorbingFlowMatchingScheduler(
+        vocab_size=model_config.vocab_size,
+        absorbing_token_id=model_config.mask_token_id,
+        num_flow_steps=cfg.flow_matching.num_flow_steps,
+        flow_schedule=cfg.flow_matching.flow_schedule,
+        min_flow_time=cfg.flow_matching.min_flow_time,
+        max_flow_time=cfg.flow_matching.max_flow_time,
     )
     return scheduler
 
 
 def prepare_dataset(cfg: DictConfig, tokenizer):
-    """Prepare datasets"""
+    """Prepare datasets for flow matching training"""
     print("--- Loading Training Dataset ---")
     train_dataset = load_and_preprocess_data(
         lmdb_path=cfg.data.train_lmdb_path,
@@ -108,41 +109,41 @@ def prepare_dataset(cfg: DictConfig, tokenizer):
 
 def main(cfg: DictConfig) -> None:
     """
-    Main training function to orchestrate the D2PLM training process.
+    Main Flow Matching training function.
 
-    This function handles:
-    - Dynamic run name and WandB ID generation.
-    - Initialization of the Accelerator for distributed training.
-    - Configuration of TrainingArguments.
-    - Initialization of WandB (on the main process only).
-    - Seeding for reproducibility.
-    - Creation of the model, tokenizer, scheduler, and datasets.
-    - Instantiation of the custom DITTrainer.
-    - Launching the training process.
-    - Saving the final model and configuration.
+    This function handles the complete flow matching training pipeline:
+    - Dynamic run name and WandB ID generation for flow matching runs
+    - Accelerator initialization for distributed training
+    - TrainingArguments configuration
+    - WandB initialization (main process only)
+    - Seeding for reproducibility
+    - Flow matching model, tokenizer, and scheduler creation
+    - Dataset preparation
+    - Flow matching trainer instantiation
+    - Training execution
+    - Final model saving
 
     Args:
-        cfg (DictConfig): The configuration object provided by Hydra.
+        cfg (DictConfig): Flow matching configuration from Hydra.
     """
     
-    # -- Dynamic Run Name Generation --
+    # -- Dynamic Run Name Generation for Flow Matching --
     timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%m%d%Y")
-    run_name_prefix = cfg.wabdb.get("run_name_prefix", "training_run")
+    run_name_prefix = cfg.wabdb.get("run_name_prefix", "flow_matching_run")
     run_name = f"{run_name_prefix}_{timestamp}"
-    print(f"Generated Run Name: {run_name}")
+    print(f"Generated Flow Matching Run Name: {run_name}")
 
     # -- WandB Run ID Management --
-    # Create a unique run ID for WandB to allow for resumption
     OmegaConf.set_struct(cfg, False)
     if "wandb_run_id" not in cfg or cfg.wandb_run_id is None:
         cfg.wandb_run_id = run_name
     OmegaConf.set_struct(cfg, True)
     print(f"WandB Run ID: {cfg.wandb_run_id}")
     
-    # Initialize Accelerator to get distributed state information
+    # Initialize Accelerator
     accelerator = Accelerator()
 
-    # 1. Configure TrainingArguments
+    # 1. Configure TrainingArguments for Flow Matching
     training_args_dict = OmegaConf.to_container(cfg.training, resolve=True)
     training_args = TrainingArguments(
         output_dir=cfg.weight.output_dir,
@@ -150,7 +151,7 @@ def main(cfg: DictConfig) -> None:
         per_device_eval_batch_size=cfg.data.batch_size,
         fp16=(cfg.system.mixed_precision == "fp16"),
         dataloader_num_workers=cfg.system.dataloader_num_workers,
-        dataloader_pin_memory=True, # Enable for async data transfer
+        dataloader_pin_memory=True,  # Enable async data transfer
         **training_args_dict,
         remove_unused_columns=False,
         push_to_hub=False,
@@ -158,7 +159,7 @@ def main(cfg: DictConfig) -> None:
         save_safetensors=True,
     )
 
-    # 2. Initialize WandB (only on the main process)
+    # 2. Initialize WandB for Flow Matching (main process only)
     if accelerator.is_main_process:
         wandb.init(
             project=cfg.wabdb.project,
@@ -174,34 +175,40 @@ def main(cfg: DictConfig) -> None:
     # 4. Create Model and Tokenizer
     model, tokenizer, model_config = create_dit_model_and_tokenizer(cfg)
 
-    # 5. Create Diffusion Scheduler
-    scheduler = create_diffusion_scheduler(cfg)
+    # 5. Create Flow Matching Scheduler
+    scheduler = create_flow_matching_scheduler(cfg, model_config)
 
     # 6. Prepare Datasets
     train_dataset, eval_dataset = prepare_dataset(cfg, tokenizer)
 
-    # 7. Create Data Collator
-    data_collator = DITDataCollator(
+    # 7. Create Flow Matching Data Collator
+    data_collator = FMDataCollator(
         tokenizer,
         scheduler,
         model_config.mask_token_id,
     )
 
-    # 8. Define Evaluation Metric
+    # 8. Define Evaluation Metric (adapted for flow matching)
     perplexity = Perplexity(ignore_index=tokenizer.pad_token_id)
 
     def compute_metrics(eval_preds: Tuple[np.ndarray, np.ndarray]) -> Dict[str, float]:
+        """
+        Compute evaluation metrics for flow matching.
+        
+        Note: For flow matching, we use direct token prediction without shifting,
+        so we adjust the metric computation accordingly.
+        """
         logits, labels = eval_preds
         device = training_args.device
         logits_tensor = torch.from_numpy(logits).to(device, non_blocking=True)
         labels_tensor = torch.from_numpy(labels).to(device, non_blocking=True)
-        shift_logits = logits_tensor[..., :-1, :].contiguous()
-        shift_labels = labels_tensor[..., 1:].contiguous()
-        ppl = perplexity.to(device)(shift_logits, shift_labels)
+        
+        # For flow matching, use direct prediction (no shifting like in diffusion)
+        ppl = perplexity.to(device)(logits_tensor, labels_tensor)
         return {"perplexity": ppl.item()}
 
-    # 9. Create the EMA-enabled Trainer
-    trainer = DITTrainer(
+    # 9. Create the Flow Matching Trainer
+    trainer = FMTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -213,28 +220,28 @@ def main(cfg: DictConfig) -> None:
         ema_decay=0.9999,
     )
 
-    # 10. Start Training
-    print("Starting training with Accelerate + FSDP...")
+    # 10. Start Flow Matching Training
+    print("Starting Flow Matching training with Accelerate + FSDP...")
     resume_from_checkpoint: Optional[str] = cfg.training.get("ckpt")
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-    # 11. Save Final Model (only on the main process)
+    # 11. Save Final Flow Matching Model (main process only)
     if accelerator.is_main_process:
-        print("Training finished! Saving final model...")
+        print("Flow Matching training finished! Saving final model...")
         trainer.save_model()
-        OmegaConf.save(cfg, os.path.join(training_args.output_dir, "config.yaml"))
-        print(f"Model saved to {training_args.output_dir}")
+        OmegaConf.save(cfg, os.path.join(training_args.output_dir, "fm_config.yaml"))
+        print(f"Flow Matching model saved to {training_args.output_dir}")
         wandb.finish()
 
 
 if __name__ == "__main__":
-    # Use argparse and manual Hydra initialization for dynamic config loading
-    parser = argparse.ArgumentParser(description="D2PLM Training with FSDP and Accelerate")
+    # Flow Matching specific argument parsing
+    parser = argparse.ArgumentParser(description="D2PLM Flow Matching Training with FSDP and Accelerate")
     parser.add_argument(
         "--config_name", 
         type=str, 
-        default="train_config",
-        help="Name of the hydra config file to use (without .yaml extension)."
+        default="FM_train_config",
+        help="Name of the flow matching config file to use (without .yaml extension)."
     )
     args, hydra_overrides = parser.parse_known_args()
 
