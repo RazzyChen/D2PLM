@@ -1,3 +1,6 @@
+# model/dataloader/DataPipe.py
+# Optimized data loading pipeline compatible with Accelerate distributed training
+
 import json
 import os
 import pickle
@@ -8,7 +11,6 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List
 
 import lmdb
-import ray
 from datasets import Dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -106,10 +108,8 @@ def _dataset_generator_optimized(
     """
     Optimized generator that yields data entries from an LMDB file with batching and prefetching.
     """
-    try:
-        rank = ray.train.get_context().get_world_rank()
-    except (ValueError, AttributeError):
-        rank = 0
+    # Use standard environment variables to determine main process
+    rank = int(os.environ.get("LOCAL_RANK", 0))
 
     # Suppress all output from non-main workers
     with suppress_output(is_main_worker=(rank == 0)):
@@ -176,17 +176,12 @@ def load_and_preprocess_data(
         print(f"Loading tokenized dataset from cache: {cache_dir}")
         return Dataset.load_from_disk(cache_dir)
 
-    try:
-        rank = ray.train.get_context().get_world_rank()
-    except (ValueError, AttributeError):
-        rank = 0
+    # Use standard environment variables to determine main process
+    rank = int(os.environ.get("LOCAL_RANK", 0))
 
     if preprocessing_num_proc is None:
-        try:
-            ray_cpus = int(ray.get_runtime_context().get_assigned_resources().get("CPU", 0))
-            preprocessing_num_proc = ray_cpus if ray_cpus > 0 else 4
-        except Exception:
-            preprocessing_num_proc = 4
+        # Use CPU count from environment or default to 4
+        preprocessing_num_proc = int(os.environ.get("OMP_NUM_THREADS", 4))
 
     with suppress_output(is_main_worker=(rank == 0)):
         print(f"Using {preprocessing_num_proc} processes for preprocessing")
