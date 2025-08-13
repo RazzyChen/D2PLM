@@ -28,6 +28,18 @@ def modulate(x, shift, scale):
 
 
 class DITAttention(nn.Module):
+    """
+    Multi-head attention module for DIT model with RoPE positional encoding.
+    
+    This attention module implements:
+    - Multi-head self-attention mechanism
+    - Rotary Position Embedding (RoPE) for positional awareness
+    - Flash attention via scaled_dot_product_attention
+    
+    Args:
+        config (DITConfig): Model configuration containing architecture parameters
+    """
+    
     def __init__(self, config: DITConfig):
         super().__init__()
         self.config = config
@@ -46,6 +58,17 @@ class DITAttention(nn.Module):
     def forward(
         self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        """
+        Apply multi-head attention with RoPE positional encoding.
+        
+        Args:
+            hidden_states: Input tensor of shape [batch_size, seq_len, hidden_size]
+            attention_mask: Optional attention mask of shape [batch_size, seq_len]
+                           where 1 = attend, 0 = mask
+                           
+        Returns:
+            torch.Tensor: Attention output of shape [batch_size, seq_len, hidden_size]
+        """
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -105,6 +128,19 @@ class DITAttention(nn.Module):
 
 
 class DITEncoderLayer(nn.Module):
+    """
+    DIT Encoder Layer with Adaptive Layer Normalization (AdaLN).
+    
+    This layer implements:
+    - Self-attention with RoPE positional encoding
+    - MLP with SwiGLU activation functions
+    - Adaptive Layer Normalization conditioned on time embeddings
+    - Residual connections with learnable gating
+    
+    Args:
+        config (DITConfig): Model configuration containing architecture parameters
+    """
+    
     def __init__(self, config: DITConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -132,6 +168,17 @@ class DITEncoderLayer(nn.Module):
         t_emb: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """
+        Apply encoder layer with adaptive layer normalization.
+        
+        Args:
+            hidden_states: Input tensor of shape [batch_size, seq_len, hidden_size]
+            t_emb: Time embedding tensor of shape [batch_size, hidden_size]
+            attention_mask: Optional attention mask of shape [batch_size, seq_len]
+            
+        Returns:
+            torch.Tensor: Layer output of shape [batch_size, seq_len, hidden_size]
+        """
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.adaLN_modulation(t_emb).chunk(6, dim=1)
         )
@@ -156,6 +203,22 @@ class DITEncoderLayer(nn.Module):
 
 
 class DITModel(PreTrainedModel):
+    """
+    DIT (Diffusion Transformer) Model for protein sequence generation.
+    
+    This model implements a diffusion transformer architecture for protein language modeling:
+    - Token embeddings for amino acid sequences
+    - Sinusoidal time embeddings for diffusion timesteps
+    - Stack of transformer encoder layers with adaptive layer normalization
+    - Language modeling head for next token prediction
+    
+    The model is designed to work with discrete diffusion processes where tokens
+    are gradually corrupted and then denoised during generation.
+    
+    Args:
+        config (DITConfig): Model configuration containing all architecture parameters
+    """
+    
     config_class = DITConfig
     base_model_prefix = "dit"
     supports_gradient_checkpointing = True
@@ -189,6 +252,14 @@ class DITModel(PreTrainedModel):
         self.init_weights()
 
     def init_weights(self):
+        """
+        Initialize model weights using appropriate initialization strategies.
+        
+        - Embedding weights: Normal distribution (std=0.02)
+        - Linear layers: Xavier uniform initialization
+        - AdaLN modulation layers: Zero initialization for stable training start
+        - LM head: Weight sharing with embeddings
+        """
         nn.init.normal_(self.embeddings.weight, mean=0.0, std=0.02)
 
         def _init_weights(module):
@@ -208,9 +279,11 @@ class DITModel(PreTrainedModel):
         self.lm_head.weight = self.embeddings.weight
 
     def get_input_embeddings(self):
+        """Get the input embedding layer."""
         return self.embeddings
 
     def set_input_embeddings(self, value):
+        """Set the input embedding layer."""
         self.embeddings = value
 
     def _get_sinusoidal_time_embedding(self, timesteps: torch.Tensor) -> torch.Tensor:
@@ -249,6 +322,23 @@ class DITModel(PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutput]:
+        """
+        Forward pass of the DIT model.
+        
+        Args:
+            input_ids: Input token IDs of shape [batch_size, seq_len]
+            attention_mask: Attention mask of shape [batch_size, seq_len] where 1=attend, 0=mask
+            timesteps: Diffusion timesteps of shape [batch_size]
+            inputs_embeds: Pre-computed input embeddings of shape [batch_size, seq_len, hidden_size]
+            output_hidden_states: Whether to return all hidden states
+            return_dict: Whether to return BaseModelOutput or tuple
+            
+        Returns:
+            BaseModelOutput containing:
+                - last_hidden_state: Final layer output [batch_size, seq_len, hidden_size]
+                - hidden_states: All layer outputs if output_hidden_states=True
+                - attentions: None (not computed)
+        """
         output_hidden_states = (
             output_hidden_states
             if output_hidden_states is not None
@@ -292,6 +382,16 @@ class DITModel(PreTrainedModel):
         )
 
     def count_parameters(self):
+        """
+        Count the total and trainable parameters in the model.
+        
+        Returns:
+            dict: Dictionary containing parameter counts and their values in millions
+                - total_parameters: Total number of parameters
+                - trainable_parameters: Number of trainable parameters
+                - total_parameters_m: Total parameters in millions
+                - trainable_parameters_m: Trainable parameters in millions
+        """
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return {
