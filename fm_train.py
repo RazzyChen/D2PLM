@@ -5,22 +5,24 @@
 import argparse
 import os
 from datetime import datetime, timedelta
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Optional, Tuple
 
 import hydra
+import numpy as np
 import torch
 import wandb
-import numpy as np
 from accelerate import Accelerator
-from model.backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
-from model.backbone.dit_config import DITConfig
-from model.backbone.dit_model import DITModel
-from model.dataloader.DataPipe import load_and_preprocess_data
-from model.trainer.FMTrainer import FMDataCollator, FMTrainer
 from omegaconf import DictConfig, OmegaConf
 from torchmetrics.text import Perplexity
-from transformers import AutoTokenizer, TrainingArguments, PreTrainedModel, PreTrainedTokenizer
-from datasets import Dataset
+from transformers import AutoTokenizer, TrainingArguments
+
+from model.backbone.dit_config import DITConfig
+from model.backbone.dit_model import DITModel
+from model.backbone.flow_matching_scheduler import (
+    DiscreteAbsorbingFlowMatchingScheduler,
+)
+from model.dataloader.DataPipe import load_and_preprocess_data
+from model.trainer.FMTrainer import FMDataCollator, FMTrainer
 
 
 def create_dit_model_and_tokenizer(cfg: DictConfig):
@@ -103,7 +105,7 @@ def prepare_dataset(cfg: DictConfig, tokenizer):
         batch_size=cfg.data.batch_size,
     )
     print(f"Validation set size: {len(eval_dataset)}")
-    
+
     return train_dataset, eval_dataset
 
 
@@ -126,7 +128,7 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg (DictConfig): Flow matching configuration from Hydra.
     """
-    
+
     # -- Dynamic Run Name Generation for Flow Matching --
     timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%m%d%Y")
     run_name_prefix = cfg.wabdb.get("run_name_prefix", "flow_matching_run")
@@ -139,7 +141,7 @@ def main(cfg: DictConfig) -> None:
         cfg.wandb_run_id = run_name
     OmegaConf.set_struct(cfg, True)
     print(f"WandB Run ID: {cfg.wandb_run_id}")
-    
+
     # Initialize Accelerator
     accelerator = Accelerator()
 
@@ -166,7 +168,7 @@ def main(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True),
             name=run_name,
             id=cfg.wandb_run_id,
-            resume="allow"
+            resume="allow",
         )
 
     # 3. Set Random Seed
@@ -194,7 +196,7 @@ def main(cfg: DictConfig) -> None:
     def compute_metrics(eval_preds: Tuple[np.ndarray, np.ndarray]) -> Dict[str, float]:
         """
         Compute evaluation metrics for flow matching.
-        
+
         Note: For flow matching, we use direct token prediction without shifting,
         so we adjust the metric computation accordingly.
         """
@@ -202,7 +204,7 @@ def main(cfg: DictConfig) -> None:
         device = training_args.device
         logits_tensor = torch.from_numpy(logits).to(device, non_blocking=True)
         labels_tensor = torch.from_numpy(labels).to(device, non_blocking=True)
-        
+
         # For flow matching, use direct prediction (no shifting like in diffusion)
         ppl = perplexity.to(device)(logits_tensor, labels_tensor)
         return {"perplexity": ppl.item()}
@@ -236,16 +238,20 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     # Flow Matching specific argument parsing
-    parser = argparse.ArgumentParser(description="D2PLM Flow Matching Training with FSDP and Accelerate")
+    parser = argparse.ArgumentParser(
+        description="D2PLM Flow Matching Training with FSDP and Accelerate"
+    )
     parser.add_argument(
-        "--config_name", 
-        type=str, 
+        "--config_name",
+        type=str,
         default="FM_train_config",
-        help="Name of the flow matching config file to use (without .yaml extension)."
+        help="Name of the flow matching config file to use (without .yaml extension).",
     )
     args, hydra_overrides = parser.parse_known_args()
 
     hydra.initialize(config_path="train_config", version_base=None)
-    cfg: DictConfig = hydra.compose(config_name=args.config_name, overrides=hydra_overrides)
-    
+    cfg: DictConfig = hydra.compose(
+        config_name=args.config_name, overrides=hydra_overrides
+    )
+
     main(cfg)

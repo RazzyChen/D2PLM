@@ -84,13 +84,17 @@ class DiscreteAbsorbingFlowMatchingScheduler:
         mask_token_id: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward process: interpolate between clean tokens and absorbing state.
-        Compatible with existing diffusion interface.
+        Flow Matching forward process with proper BOS/EOS token handling.
+        
+        For ESM protein sequences: [CLS] M K W V ... Y S [EOS]
+        - Only corrupt amino acid tokens (positions 1 to -2)
+        - Preserve CLS and EOS tokens to distinguish full vs cropped proteins
+        - This is crucial for the model to understand protein boundaries
         
         Args:
             clean_tokens: Clean token sequences [batch_size, seq_len]
             timesteps: Flow times [batch_size] 
-            mask_token_id: The absorbing token ID
+            mask_token_id: The absorbing token ID (ESM <mask>)
             
         Returns:
             noisy_tokens: Interpolated sequences [batch_size, seq_len]
@@ -108,6 +112,22 @@ class DiscreteAbsorbingFlowMatchingScheduler:
         
         # Sample which tokens to corrupt
         corruption_mask = torch.rand(batch_size, seq_len, device=device) < corruption_prob
+        
+        # CRITICAL: Protect BOS (CLS) and EOS tokens from corruption
+        # ESM format: [CLS] M K W V ... Y S [EOS]
+        #            pos 0   1 2 3 4     n-1 n
+        if seq_len > 2:  # Ensure we have enough tokens to protect boundaries
+            # Never corrupt the CLS token (position 0)
+            corruption_mask[:, 0] = False
+            
+            # Find actual sequence length (excluding padding) and protect EOS
+            # Assume pad_token_id = 1 for ESM tokenizer
+            attention_mask = (clean_tokens != 1)
+            for i in range(batch_size):
+                actual_seq_len = attention_mask[i].sum().item()
+                if actual_seq_len > 1:
+                    # Never corrupt the EOS token at the end of actual sequence
+                    corruption_mask[i, actual_seq_len-1] = False
         
         # Create noisy tokens by replacing corrupted positions with absorbing token
         noisy_tokens = clean_tokens.clone()

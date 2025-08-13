@@ -131,23 +131,34 @@ def _dataset_generator_optimized(
 def _optimized_preprocess_function(
     examples: Dict[str, List[str]], tokenizer: AutoTokenizer, max_length: int = 512
 ) -> Dict[str, List[Any]]:
-    """Optimized preprocessing function with dynamic padding and better memory usage."""
+    """
+    Optimized preprocessing function with proper BOS/EOS token handling for protein sequences.
+    
+    ESM tokenizer automatically adds:
+    - CLS token (<cls>, ID=0) at the beginning (serves as BOS)
+    - EOS token (<eos>, ID=2) at the end
+    
+    This is crucial for distinguishing full proteins from cropped/partial sequences.
+    """
     sequences = examples["sequence"]
 
-    # Add space prefix for ESM tokenization and filter by length
+    # Filter by length accounting for CLS + EOS tokens (2 tokens total)
     processed_sequences = []
     for seq in sequences:
         # Pre-filter sequences that are too long to avoid tokenization overhead
-        if len(seq) <= max_length - 2:  # Account for special tokens
-            processed_sequences.append(" " + seq)
+        if len(seq) <= max_length - 2:  # Account for CLS + EOS tokens
+            # ESM tokenizer expects sequences without spaces between amino acids
+            processed_sequences.append(seq)
         else:
-            # Truncate sequence if too long
-            processed_sequences.append(" " + seq[: max_length - 2])
+            # Truncate sequence if too long, preserving CLS/EOS space
+            processed_sequences.append(seq[: max_length - 2])
 
-    # Use dynamic padding for better memory efficiency
+    # Tokenize with proper BOS/EOS handling
+    # ESM tokenizer automatically adds CLS (BOS) and EOS tokens
     tokenized = tokenizer(
         processed_sequences,
-        padding="longest",  # Use dynamic padding instead of max_length
+        add_special_tokens=True,  # Explicitly ensure CLS/EOS are added
+        padding="longest",  # Use dynamic padding for memory efficiency
         truncation=True,
         max_length=max_length,
         return_attention_mask=True,

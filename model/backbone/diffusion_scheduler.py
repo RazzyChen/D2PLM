@@ -65,17 +65,22 @@ class DITDiffusionScheduler(SchedulerMixin, ConfigMixin):
     
     def add_noise(self, original_samples: torch.Tensor, timesteps: torch.Tensor, mask_token_id: int) -> torch.Tensor:
         """
-        添加噪声到序列
+        添加噪声到蛋白质序列，正确处理BOS/EOS tokens
+        
+        对于ESM格式: [CLS] M K W V ... Y S [EOS]
+        - 只对实际的氨基酸tokens进行corruption (positions 1 to -2)
+        - 保护CLS和EOS tokens，确保模型能区分完整蛋白质vs片段
         
         Args:
             original_samples: 原始序列 [batch_size, seq_length]
             timesteps: 时间步 [batch_size]
-            mask_token_id: 吸收态标记ID
+            mask_token_id: 吸收态标记ID (ESM的<mask>)
             
         Returns:
             noisy_samples: 被腐蚀的序列 [batch_size, seq_length]
+            mask_condition: corruption mask [batch_size, seq_length]
         """
-        batch_size = original_samples.shape[0]
+        batch_size, seq_length = original_samples.shape
         
         # 获取当前时间步的alpha值
         alpha_t = self.alphas_cumprod[timesteps].view(batch_size, 1)
@@ -88,6 +93,20 @@ class DITDiffusionScheduler(SchedulerMixin, ConfigMixin):
         
         # 根据概率决定是否腐蚀为吸收态
         mask_condition = random_values < corruption_prob
+        
+        # 保护BOS (CLS) 和EOS tokens：只允许corruption中间的氨基酸
+        # ESM格式: [CLS] M K W V ... Y S [EOS]
+        #         pos 0   1 2 3 4     n-1 n
+        if seq_length > 2:  # 确保有足够的token
+            # 不允许corruption第一个token (CLS) 和最后一个非padding token (EOS)
+            mask_condition[:, 0] = False  # 保护CLS token
+            
+            # 找到每个序列的实际长度(非padding部分)，保护EOS token
+            attention_mask = (original_samples != 1)  # 假设pad_token_id = 1
+            for i in range(batch_size):
+                seq_len = attention_mask[i].sum().item()
+                if seq_len > 1:  # 确保有EOS token需要保护
+                    mask_condition[i, seq_len-1] = False  # 保护EOS token
         
         # 创建被腐蚀的序列
         noisy_samples = original_samples.clone()

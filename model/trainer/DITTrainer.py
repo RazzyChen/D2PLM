@@ -82,8 +82,13 @@ class DITTrainer(Trainer):
 
     def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
-        Overrides the default loss computation to fit the specific needs of the DIT model.
-        The loss is calculated only at the positions corrupted by the diffusion noise.
+        Overrides the default loss computation for DIT diffusion model.
+        
+        For protein sequences with format [CLS] M K W V ... Y S [EOS]:
+        - We predict next tokens: M→K, K→W, ..., Y→S, S→[EOS]  
+        - CLS token doesn't participate in prediction (it's the start marker)
+        - Loss is calculated only at positions corrupted by diffusion noise
+        - This ensures proper BOS/EOS token handling for full vs cropped proteins
         """
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
@@ -101,16 +106,20 @@ class DITTrainer(Trainer):
         sequence_output = outputs.last_hidden_state
         logits = model.lm_head(sequence_output)
 
-        # Align logits and labels for loss calculation (shift them)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+        # For protein sequences: [CLS] M K W V ... Y S [EOS]
+        # We want to predict: M→K, K→W, ..., Y→S, S→[EOS]
+        # So we use positions 0:-1 to predict positions 1: (excluding CLS from being predicted)
+        shift_logits = logits[..., :-1, :].contiguous()  # Predictions at pos 0 to n-1
+        shift_labels = labels[..., 1:].contiguous()       # Target tokens at pos 1 to n
         
         # Also shift the noise mask to align with the shifted logits and labels
         shift_noise_mask = noise_mask[..., 1:].contiguous()
 
+        # Create loss function that ignores PAD tokens
         loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
         
-        # Flatten tensors and use the noise mask as an index to select tokens for loss calculation
+        # Only compute loss at positions that were corrupted by diffusion
+        # This ensures we learn to denoise the corrupted amino acids
         masked_logits = shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)]
         masked_labels = shift_labels.view(-1)[shift_noise_mask.view(-1)]
         
