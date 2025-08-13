@@ -253,29 +253,46 @@ class DITModel(PreTrainedModel):
 
     def init_weights(self):
         """
-        Initialize model weights using appropriate initialization strategies.
+        Initialize model weights using optimal strategies for SwiGLU + DiT architecture.
         
+        Based on DiT paper (Meta) and SwiGLU best practices:
         - Embedding weights: Normal distribution (std=0.02)
-        - Linear layers: Xavier uniform initialization
-        - AdaLN modulation layers: Zero initialization for stable training start
+        - Linear layers: Xavier uniform (optimal for SwiGLU networks)
+        - AdaLN modulation layers: Zero initialization (DiT key insight)
+        - Attention/MLP output projections: Scaled initialization for residual paths
         - LM head: Weight sharing with embeddings
         """
+        # Embedding initialization
         nn.init.normal_(self.embeddings.weight, mean=0.0, std=0.02)
 
+        # Standard layer initialization optimized for SwiGLU
         def _init_weights(module):
             if isinstance(module, nn.Linear):
+                # Xavier uniform is optimal for SwiGLU networks
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
 
         self.apply(_init_weights)
 
+        # DiT-specific initialization: Zero initialization for AdaLN modulation layers
+        # This is crucial for stable training as shown in DiT paper
         for layer in self.layers:
+            # Zero-init AdaLN modulation (critical for DiT performance)
             nn.init.constant_(layer.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(layer.adaLN_modulation[-1].bias, 0)
+            
+            # Scale down output projections for better residual learning
+            # Following DiT best practices for residual connections
+            with torch.no_grad():
+                layer.self_attn.o_proj.weight *= 0.1
+                layer.mlp[-1].weight *= 0.1
+
+        # Zero-init final AdaLN modulation
         nn.init.constant_(self.final_layer_adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer_adaLN_modulation[-1].bias, 0)
 
+        # Weight sharing between embeddings and LM head
         self.lm_head.weight = self.embeddings.weight
 
     def get_input_embeddings(self):
