@@ -1,9 +1,9 @@
-# DIT (Diffusion Transformer) 训练配置 - v2 (Wandb, Fused AdamW, Custom LR Schedule)
+# DIT (Diffusion Transformer) Training Configuration - v7 (FSDP + Accelerate)
 
 defaults:
   - _self_
 
-# 1. 模型配置 (DITConfig)
+# 1. Model Configuration (Unchanged)
 model:
   tokenizer: "facebook/esm2_t33_650M_UR50D"
   vocab_size: 33
@@ -18,7 +18,7 @@ model:
   layer_norm_eps: 1e-5
   initializer_range: 0.02
 
-# 2. 扩散调度器配置 (DITDiffusionScheduler)
+# 2. Diffusion Scheduler Configuration (Unchanged)
 diffusion:
   num_train_timesteps: 1000
   beta_start: 1e-4
@@ -27,41 +27,40 @@ diffusion:
   prediction_type: "epsilon"
   steps_offset: 0
 
-# 3. 数据配置 (DataPipe)
+# 3. Data Configuration (Unchanged)
 data:
   train_lmdb_path: "/workspace/d2plm/prepared_dataset/train_lmdb"
   val_lmdb_path: "/workspace/d2plm/prepared_dataset/validation_lmdb"
   train_cache_dir: "/workspace/d2plm/data_cache/train"
   val_cache_dir: "/workspace/d2plm/data_cache/validation"
   max_length: 1024
-  batch_size: 8
+  batch_size: 8 # Note: This is per_device_train_batch_size
 
-# 4. 训练核心配置 (TrainingArguments)
+# 4. Core Training Configuration (for TrainingArguments)
 training:
   max_steps: 160000
   learning_rate: 4e-4
   weight_decay: 0.01
-  max_grad_norm: 0.0
   gradient_accumulation_steps: 48
   
-  # 优化器与学习率调度器
+  # Optimizer and LR Scheduler
   optim: "adamw_torch_fused"
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.1
 
-  # 保存、日志和评估频率
+  # Saving, Logging, and Evaluation Frequency
+  save_strategy: "steps"
   save_steps: 500
   logging_steps: 125
   evaluation_strategy: "steps"
   eval_steps: 500
   
-  # 检查点管理
+  # Checkpoint Management
   save_total_limit: 50
-  load_best_model_at_end: false 
-  deepspeed: "/workspace/d2plm/train_config/ZERO2.json"
-  ckpt: null
+  load_best_model_at_end: false
+  ckpt: null # Retain for checkpoint resumption
 
-# 5. 系统与环境配置
+# 5. System and Environment Configuration
 system:
   device: "cuda"
   seed: 42
@@ -69,29 +68,19 @@ system:
   dataloader_prefetch_factor: 128
   dataloader_num_workers: 23
 
-# 6. Ray - 分布式训练配置
-ray:
-  run_name_prefix: "D2PLM"
-  num_workers: 2
-  use_gpu: true
-  resources_per_worker:
-    CPU: 23
-    GPU: 1
-
-# 7. 输出与日志配置
-output:
-  output_dir: "/workspace/d2plm/outputs/dit_model"
+# 6. Weight Output and Logging Configuration
+weight:
+  output_dir: "/workspace/d2plm/weight"
 
 logging:
-  report_to: "wandb" # 使用wandb记录日志
+  report_to: "wandb"
   logging_strategy: "steps"
 
 # WandB specific configuration
 wabdb:
-  project: "D2PLM_DiT"
-  entity: null # Replace with your wandb entity if needed
-
-# 8. 策略配置
+  project: "D2PLM_DiT_FSDP"
+  entity: null
+  run_name_prefix: "D2PLM" # For dynamic run name generation
 
 checkpointing:
   save_strategy: "steps"
