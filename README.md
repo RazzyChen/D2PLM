@@ -1,6 +1,6 @@
 # D2PLM: A Protein Language Model
 
-This project provides a protein language model based on the Denoising Diffusion Probabilistic Model (D3PM) framework, implemented entirely using Hugging Face's Transformers and Diffusers libraries. The model uses an Absorbing Diffusion mechanism to generate novel protein sequences that conform to biological rules.
+This project provides a protein language model based on the Denoising Diffusion Probabilistic Model (D3PM) framework, implemented using Hugging Face's Transformers and Diffusers libraries. The model uses an Absorbing Diffusion mechanism to generate novel protein sequences that conform to biological rules.
 
 ## Project Overview
 
@@ -13,6 +13,9 @@ This project provides a protein language model based on the Denoising Diffusion 
 - **Transformer Architecture**: A 10-layer Transformer encoder with a 1024-dimensional hidden state.
 - **ESM-2 Tokenizer**: Reuses the tokenizer from ESM-2 for protein sequences.
 - **UniRef50 Dataset**: Trained on the standard, redundancy-reduced UniRef50 protein sequence dataset.
+- **FSDP + Accelerate**: Modern distributed training with PyTorch's native FullyShardedDataParallel and Hugging Face Accelerate.
+- **EMA Training**: Exponential Moving Average for enhanced model stability and performance.
+- **Modular Architecture**: Clean separation of trainer logic and main orchestration.
 
 ### Model Specifications
 - **Total Parameters**: ~450M (24 layers)
@@ -34,19 +37,22 @@ D2PLM/
 │   │   ├── dit_model.py          # DIT model implementation (with RoPE)
 │   │   ├── diffusion_scheduler.py # Diffusion scheduler
 │   │   └── __init__.py
+│   ├── trainer/
+│   │   ├── DITTrainer.py         # Modularized trainer with EMA support
+│   │   └── __init__.py
 │   ├── dataloader/
-│   │   └── DataPipe.py           # Data loading and tokenization
+│   │   └── DataPipe.py           # Accelerate-compatible data loading
 │   └── utils/
 │       ├── ActivationFunction.py # SwiGLU activation function
 │       ├── RoPE.py              # RoPE implementation
 │       ├── ModelSave.py          # Model saving utility
 │       └── MyLRCallback.py       # Learning rate monitoring callback
 ├── tools/
-│   └── prepare_dataset.py      # New script for data preprocessing
+│   └── prepare_dataset.py      # Data preprocessing script
 ├── train_config/
-│   ├── train_config.yaml         # Main training configuration
-│   └── ZERO2.yaml               # DeepSpeed Zero2 configuration
-├── train.py                      # Main training script
+│   └── train_config.yaml         # FSDP + Accelerate training configuration
+├── train.py                      # Main training script (Accelerate-based)
+├── Claude.md                     # Refactoring documentation
 └── README.md                     # This file
 ```
 
@@ -55,8 +61,9 @@ D2PLM/
 ### 1. Prerequisites
 - Python 3.8+
 - CUDA 11.0+ (for GPU training)
-- An NVIDIA GPU with at least 8GB of memory is recommended.
-- Docker
+- An NVIDIA GPU with at least 8GB of memory is recommended
+- Hugging Face Accelerate for distributed training
+- Docker (recommended for environment consistency)
 
 ### 2. Environment Setup
 
@@ -115,26 +122,70 @@ data:
 
 With your datasets prepared and your configuration pointing to them, you can start the training process. The training is managed by Hydra, allowing for flexible configuration.
 
-**Start a default training run:**
+**For Single GPU Training:**
 ```bash
 python train.py
 ```
 
-**Override configuration on the command line:**
-For example, to change the learning rate and number of epochs:
+**For Multi-GPU Training with FSDP + Accelerate:**
+
+First, configure Accelerate for your hardware setup (one-time setup):
 ```bash
-python train.py training.learning_rate=2e-4 training.num_epochs=5
+accelerate config
 ```
 
-**Multi-GPU Training:**
-The project uses Ray for distributed training. The number of workers (GPUs) is set in `train_config.yaml` under the `ray` section. The script will automatically handle the distributed setup.
+Then launch distributed training:
+```bash
+accelerate launch train.py
+```
+
+**Override configuration on the command line:**
+For example, to change the learning rate and number of steps:
+```bash
+accelerate launch train.py training.learning_rate=2e-4 training.max_steps=100000
+```
+
+**Use custom config file:**
+```bash
+accelerate launch train.py --config_name custom_config
+```
+
+**Training Features:**
+The new training architecture includes several enhancements:
+- **FSDP Integration**: Automatic memory optimization with PyTorch's native FullyShardedDataParallel
+- **EMA Training**: Exponential Moving Average for enhanced model stability and performance  
+- **Async Data Pipeline**: Overlapped data loading and computation for maximum GPU utilization
+- **Modular Design**: Clean separation between trainer logic (`model/trainer/`) and main orchestration
 
 
 
 ## Configuration Details
 
-- **`train_config.yaml`**: Contains all major configurations for the model architecture, diffusion process, training loop (learning rate, batch size, optimizer), and system settings.
-- **`ZERO2.yaml`**: Configuration for DeepSpeed ZeRO Stage 2 optimization, including FP16 and memory optimizations.
+- **`train_config.yaml`**: Contains all major configurations for the model architecture, diffusion process, training loop (learning rate, batch size, optimizer), and system settings. Now streamlined for FSDP + Accelerate workflow.
+- **Accelerate Config**: Hardware-specific distributed training configuration managed by `accelerate config` command.
+
+### Architecture Improvements
+
+The training system has been refactored with the following improvements:
+
+**Modular Design:**
+- **`model/trainer/DITTrainer.py`**: Contains the specialized trainer with EMA support and custom loss calculation
+- **`train.py`**: Simplified main script focused on orchestration
+- **Accelerate Integration**: Native PyTorch FSDP replaces Ray + DeepSpeed for better maintainability
+
+**Performance Optimizations:**
+- **EMA (Exponential Moving Average)**: Integrated into the trainer for enhanced stability
+- **Async Data Pipeline**: `dataloader_pin_memory=True` and `non_blocking=True` for overlapped data transfer
+- **FSDP Memory Optimization**: Dynamic sharding strategy configured via Accelerate
+
+### Migration Notes
+
+If upgrading from the previous Ray + DeepSpeed version:
+
+1. **Dependencies**: Ray dependencies removed, Accelerate required for multi-GPU training
+2. **Launch Command**: Use `accelerate launch train.py` instead of Ray-based commands  
+3. **Configuration**: Config structure streamlined (see `Claude.md` for detailed migration guide)
+4. **Trainer Logic**: Now modularized in `model/trainer/` for better code organization
 
 ## Contributing
 
