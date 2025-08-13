@@ -4,6 +4,7 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange, repeat
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -13,7 +14,17 @@ from .dit_config import DITConfig
 
 
 def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    """Apply modulation to tensor x using shift and scale parameters.
+    
+    Args:
+        x: Input tensor of shape [batch, seq_len, hidden_size]
+        shift: Shift parameter of shape [batch, hidden_size]
+        scale: Scale parameter of shape [batch, hidden_size]
+    """
+    # Use einops for clearer dimension expansion
+    shift_expanded = rearrange(shift, 'batch hidden -> batch 1 hidden')
+    scale_expanded = rearrange(scale, 'batch hidden -> batch 1 hidden')
+    return x * (1 + scale_expanded) + shift_expanded
 
 
 class DITAttention(nn.Module):
@@ -41,44 +52,54 @@ class DITAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        # 重塑为适合 RoPE 的形状 [bsz, seq_len, num_heads, head_dim]
-        query_states = query_states.view(
-            bsz, q_len, self.num_attention_heads, self.head_dim
+        # Reshape for RoPE: [batch, seq_len, hidden] -> [batch, seq_len, num_heads, head_dim]
+        query_states = rearrange(
+            query_states, 
+            'batch seq_len (num_heads head_dim) -> batch seq_len num_heads head_dim',
+            num_heads=self.num_attention_heads,
+            head_dim=self.head_dim
         )
-        key_states = key_states.view(
-            bsz, q_len, self.num_attention_heads, self.head_dim
+        key_states = rearrange(
+            key_states,
+            'batch seq_len (num_heads head_dim) -> batch seq_len num_heads head_dim',
+            num_heads=self.num_attention_heads,
+            head_dim=self.head_dim
         )
-        value_states = value_states.view(
-            bsz, q_len, self.num_attention_heads, self.head_dim
+        value_states = rearrange(
+            value_states,
+            'batch seq_len (num_heads head_dim) -> batch seq_len num_heads head_dim',
+            num_heads=self.num_attention_heads,
+            head_dim=self.head_dim
         )
 
-        # 应用 RoPE 位置编码 - 现在输入输出都是 [bsz, seq_len, num_heads, head_dim]
+        # Apply RoPE positional encoding
         query_states = self.rope(query_states)
         key_states = self.rope(key_states)
 
-        # 转换为 attention 需要的形状 [bsz, num_heads, seq_len, head_dim]
-        query_states = query_states.transpose(1, 2).contiguous()
-        key_states = key_states.transpose(1, 2).contiguous()
-        value_states = value_states.transpose(1, 2).contiguous()
+        # Rearrange for attention: [batch, seq_len, num_heads, head_dim] -> [batch, num_heads, seq_len, head_dim]
+        query_states = rearrange(query_states, 'batch seq_len num_heads head_dim -> batch num_heads seq_len head_dim')
+        key_states = rearrange(key_states, 'batch seq_len num_heads head_dim -> batch num_heads seq_len head_dim')
+        value_states = rearrange(value_states, 'batch seq_len num_heads head_dim -> batch num_heads seq_len head_dim')
 
-        # 处理 attention_mask - 如果存在的话，需要正确的形状
+        # Process attention_mask with einops for clarity
         if attention_mask is not None:
-            # attention_mask 应该是 [bsz, seq_len] 或 [bsz, 1, seq_len, seq_len]
             if attention_mask.dim() == 2:
-                # 扩展为 [bsz, 1, 1, seq_len] 用于 scaled_dot_product_attention
-                attention_mask = attention_mask.unsqueeze(1).unsqueeze(1)
-                # 转换为适合 attention 的格式 (0 表示 attend, -inf 表示 mask)
+                # Expand [batch, seq_len] -> [batch, 1, 1, seq_len] for scaled_dot_product_attention
+                attention_mask = rearrange(attention_mask, 'batch seq_len -> batch 1 1 seq_len')
+                # Convert to attention format (0 = attend, -inf = mask)
                 attention_mask = attention_mask.to(dtype=query_states.dtype)
                 attention_mask = (1.0 - attention_mask) * torch.finfo(query_states.dtype).min
 
-        # 执行 attention 计算
+        # Execute attention computation
         attn_output = F.scaled_dot_product_attention(
             query_states, key_states, value_states, attn_mask=attention_mask
         )
 
-        # 转换回输出形状并投影
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        # Rearrange output: [batch, num_heads, seq_len, head_dim] -> [batch, seq_len, hidden_size]
+        attn_output = rearrange(
+            attn_output,
+            'batch num_heads seq_len head_dim -> batch seq_len (num_heads head_dim)'
+        )
         attn_output = self.o_proj(attn_output)
         return attn_output
 
@@ -119,13 +140,17 @@ class DITEncoderLayer(nn.Module):
         residual = hidden_states
         hidden_states_norm = modulate(self.norm1(hidden_states), shift_msa, scale_msa)
         attn_output = self.self_attn(hidden_states_norm, attention_mask=attention_mask)
-        hidden_states = residual + gate_msa.unsqueeze(1) * attn_output
+        # Apply gating with einops for clarity
+        gate_msa_expanded = rearrange(gate_msa, 'batch hidden -> batch 1 hidden')
+        hidden_states = residual + gate_msa_expanded * attn_output
 
         # MLP block
         residual = hidden_states
         hidden_states_norm = modulate(self.norm2(hidden_states), shift_mlp, scale_mlp)
         mlp_output = self.mlp(hidden_states_norm)
-        hidden_states = residual + gate_mlp.unsqueeze(1) * mlp_output
+        # Apply gating with einops for clarity
+        gate_mlp_expanded = rearrange(gate_mlp, 'batch hidden -> batch 1 hidden')
+        hidden_states = residual + gate_mlp_expanded * mlp_output
 
         return hidden_states
 
@@ -189,6 +214,14 @@ class DITModel(PreTrainedModel):
         self.embeddings = value
 
     def _get_sinusoidal_time_embedding(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """Generate sinusoidal time embeddings.
+        
+        Args:
+            timesteps: Tensor of shape [batch_size]
+            
+        Returns:
+            Time embeddings of shape [batch_size, time_embedding_dim]
+        """
         half_dim = self.config.time_embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(
@@ -197,7 +230,11 @@ class DITModel(PreTrainedModel):
             )
             * -emb
         )
-        emb = timesteps[:, None].to(self.embeddings.weight.dtype) * emb[None, :]
+        # Use einops for clearer broadcasting
+        timesteps_expanded = rearrange(timesteps.to(self.embeddings.weight.dtype), 'batch -> batch 1')
+        emb_expanded = rearrange(emb, 'half_dim -> 1 half_dim')
+        emb = timesteps_expanded * emb_expanded
+        
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         if self.config.time_embedding_dim % 2 == 1:
             emb = torch.nn.functional.pad(emb, (0, 1))
