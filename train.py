@@ -11,6 +11,7 @@ import wandb
 import numpy as np
 from accelerate import Accelerator
 from model.backbone.diffusion_scheduler import DITDiffusionScheduler
+from model.backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
 from model.dataloader.DataPipe import load_and_preprocess_data
@@ -67,17 +68,35 @@ def create_dit_model_and_tokenizer(cfg: DictConfig):
     return model, tokenizer, config
 
 
-def create_diffusion_scheduler(cfg: DictConfig):
-    """Create diffusion scheduler"""
-    scheduler = DITDiffusionScheduler(
-        num_train_timesteps=cfg.diffusion.num_train_timesteps,
-        beta_start=cfg.diffusion.beta_start,
-        beta_end=cfg.diffusion.beta_end,
-        beta_schedule=cfg.diffusion.beta_schedule,
-        prediction_type=cfg.diffusion.prediction_type,
-        steps_offset=cfg.diffusion.steps_offset,
-    )
-    return scheduler
+def create_scheduler(cfg: DictConfig, model_config):
+    """Create scheduler based on configuration - supports both diffusion and flow matching"""
+    # Check if scheduler config exists and has flow matching setting
+    use_flow_matching = False
+    if hasattr(cfg, 'scheduler') and cfg.scheduler:
+        use_flow_matching = cfg.scheduler.get("use_flow_matching_scheduler", False)
+    
+    if use_flow_matching:
+        print("Using Flow Matching Scheduler...")
+        scheduler = DiscreteAbsorbingFlowMatchingScheduler(
+            vocab_size=model_config.vocab_size,
+            absorbing_token_id=model_config.mask_token_id,
+            num_flow_steps=cfg.flow_matching.num_flow_steps,
+            flow_schedule=cfg.flow_matching.flow_schedule,
+            min_flow_time=cfg.flow_matching.min_flow_time,
+            max_flow_time=cfg.flow_matching.max_flow_time,
+        )
+    else:
+        print("Using Traditional Diffusion Scheduler...")
+        scheduler = DITDiffusionScheduler(
+            num_train_timesteps=cfg.diffusion.num_train_timesteps,
+            beta_start=cfg.diffusion.beta_start,
+            beta_end=cfg.diffusion.beta_end,
+            beta_schedule=cfg.diffusion.beta_schedule,
+            prediction_type=cfg.diffusion.prediction_type,
+            steps_offset=cfg.diffusion.steps_offset,
+        )
+    
+    return scheduler, use_flow_matching
 
 
 def prepare_dataset(cfg: DictConfig, tokenizer):
@@ -173,8 +192,8 @@ def main(cfg: DictConfig) -> None:
     # 4. Create Model and Tokenizer
     model, tokenizer, model_config = create_dit_model_and_tokenizer(cfg)
 
-    # 5. Create Diffusion Scheduler
-    scheduler = create_diffusion_scheduler(cfg)
+    # 5. Create Scheduler (Diffusion or Flow Matching)
+    scheduler, use_flow_matching = create_scheduler(cfg, model_config)
 
     # 6. Prepare Datasets
     train_dataset, eval_dataset = prepare_dataset(cfg, tokenizer)
@@ -199,7 +218,7 @@ def main(cfg: DictConfig) -> None:
         ppl = perplexity.to(device)(shift_logits, shift_labels)
         return {"perplexity": ppl.item()}
 
-    # 9. Create the EMA-enabled Trainer
+    # 9. Create the EMA-enabled Trainer with scheduler support
     trainer = DITTrainer(
         model=model,
         args=training_args,
@@ -210,10 +229,12 @@ def main(cfg: DictConfig) -> None:
         compute_metrics=compute_metrics,
         pad_token_id=tokenizer.pad_token_id,
         ema_decay=0.9999,
+        use_flow_matching=use_flow_matching,  # Pass the scheduler type
     )
 
     # 10. Start Training
-    print("Starting training with Accelerate + FSDP...")
+    scheduler_type = "Flow Matching" if use_flow_matching else "Diffusion"
+    print(f"Starting training with Accelerate + FSDP + {scheduler_type}...")
     resume_from_checkpoint: Optional[str] = cfg.training.get("ckpt")
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 

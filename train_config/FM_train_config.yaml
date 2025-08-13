@@ -1,4 +1,5 @@
-# DIT (Diffusion Transformer) Training Configuration - v7 (FSDP + Accelerate)
+# DIT (Diffusion Transformer) Training Configuration - Flow Matching Edition
+# Based on Discrete Flow Matching (arXiv:2407.15595v2)
 
 defaults:
   - _self_
@@ -18,14 +19,12 @@ model:
   layer_norm_eps: 1e-5
   initializer_range: 0.02
 
-# 2. Diffusion Scheduler Configuration (Unchanged)
-diffusion:
-  num_train_timesteps: 1000
-  beta_start: 1e-4
-  beta_end: 0.02
-  beta_schedule: "linear"
-  prediction_type: "epsilon"
-  steps_offset: 0
+# 2. Flow Matching Scheduler Configuration (New!)
+flow_matching:
+  num_flow_steps: 100
+  flow_schedule: "cosine"  # Options: 'linear', 'cosine', 'sigmoid'
+  min_flow_time: 1e-5
+  max_flow_time: 1.0
 
 # 3. Data Configuration (Unchanged)
 data:
@@ -70,7 +69,7 @@ system:
 
 # 6. Weight Output and Logging Configuration
 weight:
-  output_dir: "/workspace/d2plm/weight"
+  output_dir: "/workspace/d2plm/weight_flow_matching"
 
 logging:
   report_to: "wandb"
@@ -78,13 +77,13 @@ logging:
 
 # WandB specific configuration
 wabdb:
-  project: "D2PLM_DiT_FSDP"
+  project: "D2PLM_DiT_FlowMatching"
   entity: null
-  run_name_prefix: "D2PLM" # For dynamic run name generation
+  run_name_prefix: "D2PLM_FM" # For dynamic run name generation
 
 checkpointing:
   save_strategy: "steps"
 
-# 7. Scheduler Selection (Default: Traditional Diffusion)
+# 7. CRUCIAL: Scheduler Selection (This is the key parameter!)
 scheduler:
-  use_flow_matching_scheduler: false  # Set to true to use Flow Matching
+  use_flow_matching_scheduler: true  # Set to false to use traditional diffusion

@@ -53,26 +53,26 @@ class DITDataCollator:
 
 class DITTrainer(Trainer):
     """
-    A specialized Trainer for DIT models that integrates custom loss calculation
-    and Exponential Moving Average (EMA) for model weights.
+    A specialized Trainer for DIT models that supports both Diffusion and Flow Matching,
+    integrating custom loss calculation and Exponential Moving Average (EMA) for model weights.
 
     This class extends the standard Hugging Face Trainer to:
-    1. Implement a custom loss function where the loss is computed only at the
-       token positions that were corrupted by noise.
-    2. Integrate and manage an EMA model, which maintains a shadow copy of the
-       model's weights and updates them with a decay factor after each training step.
-    3. Ensure that the EMA weights, not the standard model weights, are saved
-       during checkpointing, as they often provide better generalization.
+    1. Support both diffusion and flow matching training paradigms
+    2. Implement custom loss functions for both approaches
+    3. Integrate and manage an EMA model for stable training
+    4. Ensure that the EMA weights are saved during checkpointing
 
     Args:
         pad_token_id (Optional[int]): The ID of the padding token, used to ignore padded
                                      positions in the loss calculation.
         ema_decay (float): The decay factor for the EMA model. A higher value
                            results in slower, more stable updates.
+        use_flow_matching (bool): Whether to use flow matching instead of diffusion.
     """
-    def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, **kwargs):
+    def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, use_flow_matching: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self.pad_token_id: Optional[int] = pad_token_id
+        self.use_flow_matching: bool = use_flow_matching
         
         # Initialize the EMAModel, which will handle device placement automatically.
         # It creates a shadow copy of the model's parameters for smooth updates.
@@ -82,8 +82,10 @@ class DITTrainer(Trainer):
 
     def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
-        Overrides the default loss computation to fit the specific needs of the DIT model.
-        The loss is calculated only at the positions corrupted by the diffusion noise.
+        Overrides the default loss computation to support both diffusion and flow matching.
+        
+        For diffusion: The loss is calculated only at positions corrupted by noise.
+        For flow matching: Uses the flow matching objective for discrete sequences.
         """
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
@@ -101,20 +103,35 @@ class DITTrainer(Trainer):
         sequence_output = outputs.last_hidden_state
         logits = model.lm_head(sequence_output)
 
-        # Align logits and labels for loss calculation (shift them)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        
-        # Also shift the noise mask to align with the shifted logits and labels
-        shift_noise_mask = noise_mask[..., 1:].contiguous()
+        if self.use_flow_matching:
+            # Flow matching loss computation
+            # Import here to avoid circular imports
+            from ..backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
+            
+            # For flow matching, we don't shift tokens - direct prediction
+            loss = DiscreteAbsorbingFlowMatchingScheduler.compute_flow_matching_loss(
+                model_logits=logits,
+                clean_tokens=labels,
+                timesteps=timesteps,
+                corruption_mask=noise_mask,
+                pad_token_id=self.pad_token_id,
+            )
+        else:
+            # Traditional diffusion loss computation
+            # Align logits and labels for loss calculation (shift them)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            
+            # Also shift the noise mask to align with the shifted logits and labels
+            shift_noise_mask = noise_mask[..., 1:].contiguous()
 
-        loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
-        
-        # Flatten tensors and use the noise mask as an index to select tokens for loss calculation
-        masked_logits = shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)]
-        masked_labels = shift_labels.view(-1)[shift_noise_mask.view(-1)]
-        
-        loss = loss_fct(masked_logits, masked_labels)
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
+            
+            # Flatten tensors and use the noise mask as an index to select tokens for loss calculation
+            masked_logits = shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)]
+            masked_labels = shift_labels.view(-1)[shift_noise_mask.view(-1)]
+            
+            loss = loss_fct(masked_logits, masked_labels)
 
         return (loss, outputs) if return_outputs else loss
 
