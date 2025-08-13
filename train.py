@@ -1,117 +1,38 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 from datetime import datetime, timedelta
+from typing import Dict, Any, Tuple, Optional
 
 import hydra
-import ray
-import ray.train
 import torch
-import torch.nn as nn
 import wandb
+import numpy as np
+from accelerate import Accelerator
 from model.backbone.diffusion_scheduler import DITDiffusionScheduler
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
 from model.dataloader.DataPipe import load_and_preprocess_data
+# Import the newly modularized Trainer and DataCollator
+from model.trainer.DITTrainer import DITDataCollator, DITTrainer
 from omegaconf import DictConfig, OmegaConf
-from ray.train import ScalingConfig
-from ray.train.torch import TorchTrainer
-from transformers import AutoTokenizer, Trainer, TrainingArguments
 from torchmetrics.text import Perplexity
-
-
-class DITDataCollator:
-    """DIT模型的数据整理器"""
-
-    def __init__(self, tokenizer, scheduler, mask_token_id):
-        self.tokenizer = tokenizer
-        self.scheduler = scheduler
-        self.mask_token_id = mask_token_id
-
-    def __call__(self, features):
-        # 提取输入ID和注意力掩码
-        input_ids = torch.stack([torch.tensor(f["input_ids"]) for f in features])
-        attention_mask = torch.stack(
-            [torch.tensor(f["attention_mask"]) for f in features]
-        )
-
-        batch_size = input_ids.shape[0]
-
-        # 随机采样时间步
-        timesteps = self.scheduler.get_timesteps(batch_size, input_ids.device)
-
-        # 添加噪声
-        noisy_input_ids, noise_mask = self.scheduler.add_noise(
-            input_ids, timesteps, self.mask_token_id
-        )
-
-        return {
-            "input_ids": noisy_input_ids,
-            "attention_mask": attention_mask,
-            "timesteps": timesteps,
-            "labels": input_ids,  # 原始序列作为标签
-            "noise_mask": noise_mask,
-        }
-
-
-class DITTrainer(Trainer):
-    """自定义DIT训练器"""
-
-    def __init__(self, *args, pad_token_id=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        # 存储 pad_token_id 以便在 compute_loss 中使用
-        self.pad_token_id = pad_token_id
-
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        """计算损失"""
-        # 获取输入
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs["attention_mask"]
-        timesteps = inputs["timesteps"]
-        labels = inputs["labels"]
-        noise_mask = inputs["noise_mask"]
-
-        # 前向传播
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            timesteps=timesteps,
-        )
-
-        # 获取logits
-        sequence_output = outputs.last_hidden_state
-        logits = model.lm_head(sequence_output)
-
-        # 计算损失
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        
-        # 只计算被mask的位置的损失
-        shift_noise_mask = noise_mask[..., 1:].contiguous()
-
-        # 使用存储的 pad_token_id
-        loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
-        
-        # Flatten the tokens
-        loss = loss_fct(
-            shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)], 
-            shift_labels.view(-1)[shift_noise_mask.view(-1)]
-        )
-
-        return (loss, outputs) if return_outputs else loss
+from transformers import AutoTokenizer, TrainingArguments, PreTrainedModel, PreTrainedTokenizer
+from datasets import Dataset
 
 
 def create_dit_model_and_tokenizer(cfg: DictConfig):
-    """创建DIT模型和tokenizer"""
+    """Create DIT model and tokenizer"""
 
-    # 加载tokenizer
+    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Tokenizer词汇表大小: {len(tokenizer)}")
+    print(f"Tokenizer vocabulary size: {len(tokenizer)}")
 
-    # 创建模型配置
+    # Create model configuration
     config = DITConfig(
         vocab_size=cfg.model.vocab_size,
         max_position_embeddings=cfg.model.max_position_embeddings,
@@ -124,7 +45,7 @@ def create_dit_model_and_tokenizer(cfg: DictConfig):
         attention_probs_dropout_prob=cfg.model.attention_probs_dropout_prob,
         layer_norm_eps=cfg.model.layer_norm_eps,
         initializer_range=cfg.model.initializer_range,
-        pad_token_id=tokenizer.pad_token_id,  # 确保设置正确的 pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
         mask_token_id=tokenizer.mask_token_id
         if hasattr(tokenizer, "mask_token_id")
         else 1,
@@ -134,20 +55,20 @@ def create_dit_model_and_tokenizer(cfg: DictConfig):
         eos_token_id=tokenizer.eos_token_id,
     )
 
-    # 创建模型
+    # Create model
     model = DITModel(config)
 
-    # 统计参数
+    # Count parameters
     param_info = model.count_parameters()
     print(
-        f"模型总参数量: {param_info['total_parameters']:,} ({param_info['total_parameters_m']:.1f}M)"
+        f"Total model parameters: {param_info['total_parameters']:,} ({param_info['total_parameters_m']:.1f}M)"
     )
 
     return model, tokenizer, config
 
 
 def create_diffusion_scheduler(cfg: DictConfig):
-    """创建扩散调度器"""
+    """Create diffusion scheduler"""
     scheduler = DITDiffusionScheduler(
         num_train_timesteps=cfg.diffusion.num_train_timesteps,
         beta_start=cfg.diffusion.beta_start,
@@ -160,7 +81,7 @@ def create_diffusion_scheduler(cfg: DictConfig):
 
 
 def prepare_dataset(cfg: DictConfig, tokenizer):
-    """准备数据集"""
+    """Prepare datasets"""
     print("--- Loading Training Dataset ---")
     train_dataset = load_and_preprocess_data(
         lmdb_path=cfg.data.train_lmdb_path,
@@ -184,167 +105,139 @@ def prepare_dataset(cfg: DictConfig, tokenizer):
     return train_dataset, eval_dataset
 
 
-def train_func(config: dict):
-    """Ray Train training function"""
-    cfg = OmegaConf.create(config)
+def main(cfg: DictConfig) -> None:
+    """
+    Main training function to orchestrate the D2PLM training process.
 
-    # -- 初始化WandB --
-    # 只有主工作节点（rank 0）才应该初始化和上传
-    if ray.train.get_context().get_world_rank() == 0:
-        run_id = cfg.get("wandb_run_id")  # 从配置中获取run_id
-        wandb.init(
-            project="D2PLM",
-            config=config,
-            name=ray.train.get_context().get_experiment_name(),
-            id=run_id,
-            resume="allow",  # 允许恢复运行
-        )
+    This function handles:
+    - Dynamic run name and WandB ID generation.
+    - Initialization of the Accelerator for distributed training.
+    - Configuration of TrainingArguments.
+    - Initialization of WandB (on the main process only).
+    - Seeding for reproducibility.
+    - Creation of the model, tokenizer, scheduler, and datasets.
+    - Instantiation of the custom DITTrainer.
+    - Launching the training process.
+    - Saving the final model and configuration.
 
-    # 设置随机种子
-    torch.manual_seed(cfg.system.seed)
+    Args:
+        cfg (DictConfig): The configuration object provided by Hydra.
+    """
+    
+    # -- Dynamic Run Name Generation --
+    timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%m%d%Y")
+    run_name_prefix = cfg.wabdb.get("run_name_prefix", "training_run")
+    run_name = f"{run_name_prefix}_{timestamp}"
+    print(f"Generated Run Name: {run_name}")
 
-    # 设置设备
-    device = torch.device(cfg.system.device if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {device}")
+    # -- WandB Run ID Management --
+    # Create a unique run ID for WandB to allow for resumption
+    OmegaConf.set_struct(cfg, False)
+    if "wandb_run_id" not in cfg or cfg.wandb_run_id is None:
+        cfg.wandb_run_id = run_name
+    OmegaConf.set_struct(cfg, True)
+    print(f"WandB Run ID: {cfg.wandb_run_id}")
+    
+    # Initialize Accelerator to get distributed state information
+    accelerator = Accelerator()
 
-    # 创建模型和tokenizer
-    model, tokenizer, model_config = create_dit_model_and_tokenizer(cfg)
-
-    # 创建扩散调度器
-    scheduler = create_diffusion_scheduler(cfg)
-
-    # 准备数据集
-    train_dataset, eval_dataset = prepare_dataset(cfg, tokenizer)
-
-    # 创建数据整理器
-    data_collator = DITDataCollator(
-        tokenizer,
-        scheduler,
-        tokenizer.mask_token_id if hasattr(tokenizer, "mask_token_id") else 1,
-    )
-
-    # 定义评估指标
-    perplexity = Perplexity(ignore_index=tokenizer.pad_token_id).to(device)
-
-    def compute_metrics(eval_preds):
-        logits, labels = eval_preds
-        logits = torch.from_numpy(logits).to(device)
-        labels = torch.from_numpy(labels).to(device)
-
-        # 根据模型内部的损失计算方式对齐
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-
-        ppl = perplexity(shift_logits, shift_labels)
-        return {"perplexity": ppl.item()}
-
-    # 创建训练参数
+    # 1. Configure TrainingArguments
+    training_args_dict = OmegaConf.to_container(cfg.training, resolve=True)
     training_args = TrainingArguments(
-        output_dir=cfg.output.output_dir,
-        max_steps=cfg.training.max_steps,
+        output_dir=cfg.weight.output_dir,
         per_device_train_batch_size=cfg.data.batch_size,
         per_device_eval_batch_size=cfg.data.batch_size,
-        gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
-        learning_rate=cfg.training.learning_rate,
-        weight_decay=cfg.training.weight_decay,
-        # 优化器和学习率调度器
-        optim=cfg.training.optim,
-        lr_scheduler_type=cfg.training.lr_scheduler_type,
-        warmup_ratio=cfg.training.warmup_ratio,
-        logging_steps=cfg.training.logging_steps,
-        save_steps=cfg.training.save_steps,
-        evaluation_strategy=cfg.training.evaluation_strategy,
-        eval_steps=cfg.training.eval_steps,
-        save_strategy=cfg.checkpointing.save_strategy,
-        save_total_limit=cfg.training.save_total_limit,
-        load_best_model_at_end=cfg.training.load_best_model_at_end,
+        fp16=(cfg.system.mixed_precision == "fp16"),
         dataloader_num_workers=cfg.system.dataloader_num_workers,
-        dataloader_prefetch_factor=cfg.system.dataloader_prefetch_factor,
-        fp16=cfg.system.mixed_precision,
-        # 其他
+        dataloader_pin_memory=True, # Enable for async data transfer
+        **training_args_dict,
         remove_unused_columns=False,
         push_to_hub=False,
         report_to=cfg.logging.report_to,
         save_safetensors=True,
-        deepspeed=cfg.training.deepspeed,  # 添加DeepSpeed配置
     )
 
-    # 创建训练器，传入 pad_token_id
+    # 2. Initialize WandB (only on the main process)
+    if accelerator.is_main_process:
+        wandb.init(
+            project=cfg.wabdb.project,
+            config=OmegaConf.to_container(cfg, resolve=True),
+            name=run_name,
+            id=cfg.wandb_run_id,
+            resume="allow"
+        )
+
+    # 3. Set Random Seed
+    torch.manual_seed(cfg.system.seed)
+
+    # 4. Create Model and Tokenizer
+    model, tokenizer, model_config = create_dit_model_and_tokenizer(cfg)
+
+    # 5. Create Diffusion Scheduler
+    scheduler = create_diffusion_scheduler(cfg)
+
+    # 6. Prepare Datasets
+    train_dataset, eval_dataset = prepare_dataset(cfg, tokenizer)
+
+    # 7. Create Data Collator
+    data_collator = DITDataCollator(
+        tokenizer,
+        scheduler,
+        model_config.mask_token_id,
+    )
+
+    # 8. Define Evaluation Metric
+    perplexity = Perplexity(ignore_index=tokenizer.pad_token_id)
+
+    def compute_metrics(eval_preds: Tuple[np.ndarray, np.ndarray]) -> Dict[str, float]:
+        logits, labels = eval_preds
+        device = training_args.device
+        logits_tensor = torch.from_numpy(logits).to(device, non_blocking=True)
+        labels_tensor = torch.from_numpy(labels).to(device, non_blocking=True)
+        shift_logits = logits_tensor[..., :-1, :].contiguous()
+        shift_labels = labels_tensor[..., 1:].contiguous()
+        ppl = perplexity.to(device)(shift_logits, shift_labels)
+        return {"perplexity": ppl.item()}
+
+    # 9. Create the EMA-enabled Trainer
     trainer = DITTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
+        tokenizer=tokenizer,
         compute_metrics=compute_metrics,
-        pad_token_id=tokenizer.pad_token_id,  # 传入 pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
+        ema_decay=0.9999,
     )
 
-    # -- 检查点恢复 --
-    resume_from_checkpoint = None
-    if cfg.training.get("ckpt"):
-        ckpt_path = cfg.training.ckpt
-        if os.path.isdir(ckpt_path):
-            print(f"从检查点恢复: {ckpt_path}")
-            resume_from_checkpoint = ckpt_path
-        else:
-            print(f"警告: 检查点路径不存在或不是一个目录: {ckpt_path}")
-
-    # 开始训练
-    print("开始训练...")
+    # 10. Start Training
+    print("Starting training with Accelerate + FSDP...")
+    resume_from_checkpoint: Optional[str] = cfg.training.get("ckpt")
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-    if ray.train.get_context().get_world_rank() == 0:
-        # 保存最终模型
-        final_save_dir = f"{cfg.output.output_dir}/final_model"
-        trainer.save_model(final_save_dir)
-        tokenizer.save_pretrained(final_save_dir)
-
-        # 保存调度器
-        scheduler.save_pretrained(final_save_dir)
-
-        # 保存配置
-        OmegaConf.save(cfg, f"{final_save_dir}/config.yaml")
-
-        print(f"训练完成！模型已保存到 {final_save_dir}")
-
-        # 结束WandB运行
+    # 11. Save Final Model (only on the main process)
+    if accelerator.is_main_process:
+        print("Training finished! Saving final model...")
+        trainer.save_model()
+        OmegaConf.save(cfg, os.path.join(training_args.output_dir, "config.yaml"))
+        print(f"Model saved to {training_args.output_dir}")
         wandb.finish()
 
 
-@hydra.main(version_base=None, config_path="train_config", config_name="train_config")
-def main(cfg: DictConfig):
-    """主训练函数"""
-    # -- 动态生成运行名称 --
-    timestamp = (datetime.now() + timedelta(hours=8)).strftime("%H%M%m%d%Y")
-    run_name_prefix = cfg.ray.get("run_name_prefix", "training_run")
-    run_name = f"{run_name_prefix}_{timestamp}"
-    print(f"Generated Run Name: {run_name}")
-
-    # -- WandB run ID --
-    # 为WandB创建一个唯一的运行ID，以便恢复
-    OmegaConf.set_struct(cfg, False)
-    if "wandb_run_id" not in cfg or cfg.wandb_run_id is None:
-        cfg.wandb_run_id = run_name  # 使用run_name作为wandb_run_id
-    OmegaConf.set_struct(cfg, True)
-    print(f"WandB Run ID: {cfg.wandb_run_id}")
-
-    ray_trainer = TorchTrainer(
-        train_func,
-        train_loop_config=OmegaConf.to_container(cfg, resolve=True),
-        scaling_config=ScalingConfig(
-            num_workers=cfg.ray.num_workers,
-            resources_per_worker=cfg.ray.resources_per_worker,
-            use_gpu=cfg.ray.use_gpu,
-            placement_strategy="PACK",
-        ),
-        run_config=ray.train.RunConfig(
-            name=run_name,
-        ),
-    )
-    result = ray_trainer.fit()
-    print(f"Training result: {result}")
-
-
 if __name__ == "__main__":
-    main()
+    # Use argparse and manual Hydra initialization for dynamic config loading
+    parser = argparse.ArgumentParser(description="D2PLM Training with FSDP and Accelerate")
+    parser.add_argument(
+        "--config_name", 
+        type=str, 
+        default="train_config",
+        help="Name of the hydra config file to use (without .yaml extension)."
+    )
+    args, hydra_overrides = parser.parse_known_args()
+
+    hydra.initialize(config_path="train_config", version_base=None)
+    cfg: DictConfig = hydra.compose(config_name=args.config_name, overrides=hydra_overrides)
+    
+    main(cfg)
