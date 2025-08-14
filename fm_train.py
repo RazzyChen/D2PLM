@@ -12,10 +12,6 @@ import numpy as np
 import torch
 import wandb
 from accelerate import Accelerator
-from omegaconf import DictConfig, OmegaConf
-from torchmetrics.text import Perplexity
-from transformers import AutoTokenizer, TrainingArguments
-
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
 from model.backbone.flow_matching_scheduler import (
@@ -23,6 +19,9 @@ from model.backbone.flow_matching_scheduler import (
 )
 from model.dataloader.DataPipe import load_and_preprocess_data
 from model.trainer.FMTrainer import FMDataCollator, FMTrainer
+from omegaconf import DictConfig, OmegaConf
+from torchmetrics.text import Perplexity
+from transformers import AutoTokenizer, TrainingArguments
 
 
 def create_dit_model_and_tokenizer(cfg: DictConfig):
@@ -149,44 +148,35 @@ def main(cfg: DictConfig) -> None:
     training_args = TrainingArguments(
         # Output & Storage
         output_dir=cfg.weight.output_dir,
-        
         # Model Save & Load
         save_strategy=cfg.training.save_strategy,
         save_steps=cfg.training.save_steps,
         save_total_limit=cfg.training.save_total_limit,
         save_safetensors=True,
         load_best_model_at_end=cfg.training.load_best_model_at_end,
-        
         # Training Hyperparameters
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
         max_steps=cfg.training.max_steps,
         gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
         warmup_ratio=cfg.training.warmup_ratio,
-        
         # Batch Sizes
         per_device_train_batch_size=cfg.data.batch_size,
         per_device_eval_batch_size=cfg.data.batch_size,
-        
         # Optimizer & Scheduler
         optim=cfg.training.optim,
         lr_scheduler_type=cfg.training.lr_scheduler_type,
-        
         # Evaluation
         eval_strategy=cfg.training.evaluation_strategy,
         eval_steps=cfg.training.eval_steps,
-        
         # System & Performance
-        bf16=cfg.system.mixed_precision == "bf16",
-        tf32=cfg.system.mixed_precision == "tf32",
+        fp16=cfg.system.fp16_is_avaliable,
         dataloader_num_workers=cfg.system.dataloader_num_workers,
         dataloader_pin_memory=True,
-        
         # Logging & Reporting
         logging_strategy=cfg.logging.logging_strategy,
         logging_steps=cfg.training.logging_steps,
         report_to=cfg.logging.report_to,
-        
         # Miscellaneous
         remove_unused_columns=False,
         push_to_hub=False,
