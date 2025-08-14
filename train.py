@@ -200,7 +200,7 @@ def main(cfg: DictConfig) -> None:
         ppl = perplexity.to(device)(shift_logits, shift_labels)
         return {"perplexity": ppl.item()}
 
-    # 9. Create the EMA-enabled Trainer
+    # 9. Create the EMA-enabled Trainer with async dataloader support
     trainer = DITTrainer(
         model=model,
         args=training_args,
@@ -211,6 +211,7 @@ def main(cfg: DictConfig) -> None:
         compute_metrics=compute_metrics,
         pad_token_id=tokenizer.pad_token_id,
         ema_decay=0.9999,
+        enable_async_dataloader=True,  # Enable dual CUDA stream pipeline
     )
 
     # 10. Start Training

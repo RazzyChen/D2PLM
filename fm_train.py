@@ -233,7 +233,7 @@ def main(cfg: DictConfig) -> None:
         ppl = perplexity.to(device)(logits_tensor, labels_tensor)
         return {"perplexity": ppl.item()}
 
-    # 9. Create the Flow Matching Trainer
+    # 9. Create the Flow Matching Trainer with async dataloader support
     trainer = FMTrainer(
         model=model,
         args=training_args,
@@ -246,6 +246,7 @@ def main(cfg: DictConfig) -> None:
         ema_decay=cfg.training.ema_decay,
         ema_enabled=cfg.training.ema_enabled,
         ema_update_interval=cfg.training.ema_update_interval,
+        enable_async_dataloader=True,  # Enable dual CUDA stream pipeline
     )
 
     # 10. Start Flow Matching Training

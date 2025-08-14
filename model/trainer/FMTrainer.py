@@ -9,6 +9,7 @@ from transformers import Trainer, PreTrainedTokenizer
 from typing import Dict, Any, List, Tuple, Optional, Union
 from ..backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
 from .cpu_ema import CPUEMAModel, EMAContextManager
+from ..dataloader.AsyncDataCollator import AsyncDataCollator, PipelinedDataLoader
 
 
 class FMDataCollator:
@@ -79,11 +80,13 @@ class FMTrainer(Trainer):
     """
     
     def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, 
-                 ema_enabled: bool = True, ema_update_interval: int = 1, **kwargs):
+                 ema_enabled: bool = True, ema_update_interval: int = 1,
+                 enable_async_dataloader: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
         self.pad_token_id: Optional[int] = pad_token_id
         self.cumulative_tokens = 0
         self.global_step_count = 0
+        self.enable_async_dataloader = enable_async_dataloader
         
         # EMA Configuration
         self.ema_enabled = ema_enabled
@@ -203,6 +206,22 @@ class FMTrainer(Trainer):
                 self.ema_model.load_state_dict(ema_state)
         
         return result
+
+    def get_train_dataloader(self):
+        """
+        Override to create async dataloader if enabled.
+        """
+        train_dataloader = super().get_train_dataloader()
+        
+        if self.enable_async_dataloader and hasattr(self, 'data_collator'):
+            # Wrap the existing data collator with async version
+            device = self.args.device if hasattr(self.args, 'device') else 'cuda'
+            async_collator = AsyncDataCollator(self.data_collator, device)
+            
+            # Create pipelined dataloader
+            return PipelinedDataLoader(train_dataloader, async_collator)
+        
+        return train_dataloader
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         """

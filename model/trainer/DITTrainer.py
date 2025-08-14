@@ -3,9 +3,11 @@
 import torch
 import torch.nn as nn
 import wandb
+import nvtx
 from diffusers.training_utils import EMAModel
 from transformers import Trainer, PreTrainedTokenizer
 from typing import Dict, Any, List, Tuple, Optional, Union
+from ..dataloader.AsyncDataCollator import AsyncDataCollator, PipelinedDataLoader
 
 class DITDataCollator:
     """
@@ -27,22 +29,26 @@ class DITDataCollator:
         self.scheduler: Any = scheduler
         self.mask_token_id: int = mask_token_id
 
+    @nvtx.annotate("DITDataCollator.__call__", color="blue")
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        # Stack tensors from the list of features
-        input_ids = torch.stack([torch.tensor(f["input_ids"]) for f in features])
-        attention_mask = torch.stack(
-            [torch.tensor(f["attention_mask"]) for f in features]
-        )
+        # Stack tensors from the list of features  
+        with nvtx.annotate("stack_tensors", color="cyan"):
+            input_ids = torch.stack([torch.tensor(f["input_ids"]) for f in features])
+            attention_mask = torch.stack(
+                [torch.tensor(f["attention_mask"]) for f in features]
+            )
 
         batch_size = input_ids.shape[0]
 
         # Sample random timesteps
-        timesteps = self.scheduler.get_timesteps(batch_size, input_ids.device)
+        with nvtx.annotate("sample_timesteps", color="green"):
+            timesteps = self.scheduler.get_timesteps(batch_size, input_ids.device)
 
         # Apply noise (corruption)
-        noisy_input_ids, noise_mask = self.scheduler.add_noise(
-            input_ids, timesteps, self.mask_token_id
-        )
+        with nvtx.annotate("apply_diffusion_noise", color="orange"):
+            noisy_input_ids, noise_mask = self.scheduler.add_noise(
+                input_ids, timesteps, self.mask_token_id
+            )
 
         return {
             "input_ids": noisy_input_ids,
@@ -71,10 +77,12 @@ class DITTrainer(Trainer):
         ema_decay (float): The decay factor for the EMA model. A higher value
                            results in slower, more stable updates.
     """
-    def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, **kwargs):
+    def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, 
+                 enable_async_dataloader: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
         self.pad_token_id: Optional[int] = pad_token_id
         self.cumulative_tokens = 0
+        self.enable_async_dataloader = enable_async_dataloader
         
         # Initialize the EMAModel, which will handle device placement automatically.
         # It creates a shadow copy of the model's parameters for smooth updates.
@@ -82,7 +90,8 @@ class DITTrainer(Trainer):
             self.model, decay=ema_decay
         )
 
-    def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
+    @nvtx.annotate("compute_loss", color="red")
+    def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False, num_items_in_batch: int = None) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
         Overrides the default loss computation for DIT diffusion model.
         
@@ -99,11 +108,12 @@ class DITTrainer(Trainer):
         noise_mask = inputs["noise_mask"]
 
         # Model forward pass
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            timesteps=timesteps,
-        )
+        with nvtx.annotate("model_forward", color="purple"):
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                timesteps=timesteps,
+            )
 
         sequence_output = outputs.last_hidden_state
         logits = model.lm_head(sequence_output)
@@ -111,33 +121,37 @@ class DITTrainer(Trainer):
         # For protein sequences: [CLS] M K W V ... Y S [EOS]
         # We want to predict: M→K, K→W, ..., Y→S, S→[EOS]
         # So we use positions 0:-1 to predict positions 1: (excluding CLS from being predicted)
-        shift_logits = logits[..., :-1, :].contiguous()  # Predictions at pos 0 to n-1
-        shift_labels = labels[..., 1:].contiguous()       # Target tokens at pos 1 to n
-        
-        # Also shift the noise mask to align with the shifted logits and labels
-        shift_noise_mask = noise_mask[..., 1:].contiguous()
+        with nvtx.annotate("compute_diffusion_loss", color="yellow"):
+            shift_logits = logits[..., :-1, :].contiguous()  # Predictions at pos 0 to n-1
+            shift_labels = labels[..., 1:].contiguous()       # Target tokens at pos 1 to n
+            
+            # Also shift the noise mask to align with the shifted logits and labels
+            shift_noise_mask = noise_mask[..., 1:].contiguous()
 
-        # Create loss function that ignores PAD tokens
-        loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
-        
-        # Only compute loss at positions that were corrupted by diffusion
-        # This ensures we learn to denoise the corrupted amino acids
-        masked_logits = shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)]
-        masked_labels = shift_labels.view(-1)[shift_noise_mask.view(-1)]
-        
-        loss = loss_fct(masked_logits, masked_labels)
+            # Create loss function that ignores PAD tokens
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
+            
+            # Only compute loss at positions that were corrupted by diffusion
+            # This ensures we learn to denoise the corrupted amino acids
+            masked_logits = shift_logits.view(-1, shift_logits.size(-1))[shift_noise_mask.view(-1)]
+            masked_labels = shift_labels.view(-1)[shift_noise_mask.view(-1)]
+            
+            loss = loss_fct(masked_logits, masked_labels)
 
         return (loss, outputs) if return_outputs else loss
 
-    def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+    @nvtx.annotate("training_step", color="magenta")
+    def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor], num_items_in_batch: int = None) -> torch.Tensor:
         """
         Overrides the training_step to update EMA weights and log to WandB.
         """
         # Perform the original training step (forward, loss, backward)
-        loss = super().training_step(model, inputs)
+        with nvtx.annotate("super_training_step", color="lime"):
+            loss = super().training_step(model, inputs, num_items_in_batch)
 
         # After the gradients have been updated, update the EMA model.
-        self.ema_model.step(model.parameters())
+        with nvtx.annotate("ema_update", color="coral"):
+            self.ema_model.step(model.parameters())
 
         # --- Custom WandB Logging ---
         if self.is_world_process_zero() and wandb.run:
@@ -157,6 +171,22 @@ class DITTrainer(Trainer):
 
         return loss
 
+    def get_train_dataloader(self):
+        """
+        Override to create async dataloader if enabled.
+        """
+        train_dataloader = super().get_train_dataloader()
+        
+        if self.enable_async_dataloader and hasattr(self, 'data_collator'):
+            # Wrap the existing data collator with async version
+            device = self.args.device if hasattr(self.args, 'device') else 'cuda'
+            async_collator = AsyncDataCollator(self.data_collator, device)
+            
+            # Create pipelined dataloader
+            return PipelinedDataLoader(train_dataloader, async_collator)
+        
+        return train_dataloader
+    
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
         """
         Enhanced evaluation using EMA weights and logs metrics to WandB.
