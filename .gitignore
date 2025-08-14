@@ -220,3 +220,6 @@ weight_*/
 checkpoints/
 *.pt
 *.pth
+
+# Profiling files
+*.nsys-rep

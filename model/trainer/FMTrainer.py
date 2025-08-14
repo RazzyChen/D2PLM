@@ -172,18 +172,6 @@ class FMTrainer(Trainer):
 
         return loss
 
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
-        """
-        Override evaluate to use EMA model for evaluation if enabled.
-        """
-        if self.ema_enabled and self.ema_model is not None:
-            # Use EMA model for evaluation
-            with EMAContextManager(self.model, self.ema_model):
-                return super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
-        else:
-            # Use regular model for evaluation
-            return super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
-
     def _save_checkpoint(self, model, trial, metrics=None):
         """
         Override to save EMA model state in checkpoints.
@@ -223,27 +211,31 @@ class FMTrainer(Trainer):
         For flow matching, we save the EMA-averaged weights as they typically
         provide better sample quality and more stable generation.
         """
-        # Copy EMA weights to main model before saving
-        self.ema_model.copy_to(self.model.parameters())
+        if self.ema_enabled and self.ema_model is not None:
+            # Copy EMA weights to main model before saving
+            self.ema_model.copy_to(self.model.parameters())
         
         # Save the model with EMA weights
         super().save_model(output_dir, _internal_call)
         
-        # Restore original weights for continued training
-        self.ema_model.restore(self.model.parameters())
+        if self.ema_enabled and self.ema_model is not None:
+            # Restore original weights for continued training
+            self.ema_model.restore(self.model.parameters())
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
         """
         Enhanced evaluation using EMA weights and logs metrics to WandB.
         """
-        # Temporarily switch to EMA weights for evaluation
-        self.ema_model.copy_to(self.model.parameters())
+        if self.ema_enabled and self.ema_model is not None:
+            # Temporarily switch to EMA weights for evaluation
+            self.ema_model.copy_to(self.model.parameters())
         
         # Run evaluation
         metrics = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
         
-        # Restore training weights
-        self.ema_model.restore(self.model.parameters())
+        if self.ema_enabled and self.ema_model is not None:
+            # Restore training weights
+            self.ema_model.restore(self.model.parameters())
         
         # --- Custom WandB Logging for Evaluation ---
         if self.is_world_process_zero() and wandb.run:

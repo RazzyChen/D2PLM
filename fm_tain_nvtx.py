@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # Flow Matching Training Script - Completely Independent from Diffusion
 # Based on Discrete Absorbing Flow Matching (arXiv:2407.15595v2)
