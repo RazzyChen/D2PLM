@@ -14,7 +14,8 @@ import lmdb
 from datasets import Dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
-
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 @contextmanager
 def suppress_output(is_main_worker):
@@ -191,8 +192,8 @@ def load_and_preprocess_data(
     rank = int(os.environ.get("LOCAL_RANK", 0))
 
     if preprocessing_num_proc is None:
-        # Use CPU count from environment or default to 4
-        preprocessing_num_proc = int(os.environ.get("OMP_NUM_THREADS", 4))
+        # Use CPU count from environment or default to dataloader_num_workers
+        preprocessing_num_proc = cfg.system.dataloader_num_workers
 
     with suppress_output(is_main_worker=(rank == 0)):
         print(f"Using {preprocessing_num_proc} processes for preprocessing")
