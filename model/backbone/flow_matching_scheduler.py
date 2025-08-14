@@ -5,6 +5,7 @@
 import math
 import torch
 import torch.nn.functional as F
+import nvtx
 from typing import Optional, Tuple
 from einops import rearrange
 
@@ -67,6 +68,7 @@ class DiscreteAbsorbingFlowMatchingScheduler:
         else:
             raise ValueError(f"Unknown flow schedule: {self.flow_schedule}")
     
+    @nvtx.annotate("get_timesteps", color="lightblue")
     def get_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """
         Sample random flow times for training.
@@ -77,6 +79,7 @@ class DiscreteAbsorbingFlowMatchingScheduler:
         flow_times = self.min_flow_time + flow_times * (self.max_flow_time - self.min_flow_time)
         return flow_times
     
+    @nvtx.annotate("add_noise", color="orange")
     def add_noise(
         self,
         clean_tokens: torch.Tensor,
@@ -136,6 +139,7 @@ class DiscreteAbsorbingFlowMatchingScheduler:
         return noisy_tokens, corruption_mask
     
     @staticmethod
+    @nvtx.annotate("compute_flow_matching_loss", color="red")
     def compute_flow_matching_loss(
         model_logits: torch.Tensor,
         clean_tokens: torch.Tensor,

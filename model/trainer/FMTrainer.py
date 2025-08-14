@@ -4,6 +4,7 @@
 import torch
 import torch.nn as nn
 import wandb
+import nvtx
 from transformers import Trainer, PreTrainedTokenizer
 from typing import Dict, Any, List, Tuple, Optional, Union
 from ..backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
@@ -28,27 +29,31 @@ class FMDataCollator:
         self.mask_token_id: int = mask_token_id
         self.max_length: int = max_length
 
+    @nvtx.annotate("FMDataCollator.__call__", color="blue")
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """Process a batch of features for flow matching training."""
         # Use tokenizer to handle padding automatically
-        batch = self.tokenizer.pad(
-            features,
-            padding='max_length' if self.max_length else True,
-            max_length=self.max_length,
-            return_tensors="pt"
-        )
+        with nvtx.annotate("tokenizer_pad", color="cyan"):
+            batch = self.tokenizer.pad(
+                features,
+                padding='max_length' if self.max_length else True,
+                max_length=self.max_length,
+                return_tensors="pt"
+            )
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
 
         batch_size = input_ids.shape[0]
 
         # Sample random flow times for training
-        timesteps = self.scheduler.get_timesteps(batch_size, input_ids.device)
+        with nvtx.annotate("sample_timesteps", color="green"):
+            timesteps = self.scheduler.get_timesteps(batch_size, input_ids.device)
 
         # Apply flow matching forward process (corruption)
-        noisy_input_ids, corruption_mask = self.scheduler.add_noise(
-            input_ids, timesteps, self.mask_token_id
-        )
+        with nvtx.annotate("flow_matching_noise", color="orange"):
+            noisy_input_ids, corruption_mask = self.scheduler.add_noise(
+                input_ids, timesteps, self.mask_token_id
+            )
 
         return {
             "input_ids": noisy_input_ids,
@@ -92,6 +97,7 @@ class FMTrainer(Trainer):
         else:
             self.ema_model = None
 
+    @nvtx.annotate("compute_loss", color="red")
     def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False, num_items_in_batch: int = None) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
         Compute flow matching loss for discrete sequences.
@@ -106,34 +112,38 @@ class FMTrainer(Trainer):
         corruption_mask = inputs["corruption_mask"]
 
         # Model forward pass
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            timesteps=timesteps,
-        )
+        with nvtx.annotate("model_forward", color="purple"):
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                timesteps=timesteps,
+            )
 
         # Get model predictions (logits)
         sequence_output = outputs.last_hidden_state
         logits = model.lm_head(sequence_output)
 
         # Apply flow matching loss computation
-        # Note: Flow matching uses direct token prediction (no shifting)
-        loss = DiscreteAbsorbingFlowMatchingScheduler.compute_flow_matching_loss(
-            model_logits=logits,
-            clean_tokens=labels,
-            timesteps=timesteps,
-            corruption_mask=corruption_mask,
-            pad_token_id=self.pad_token_id,
-        )
+        with nvtx.annotate("flow_matching_loss", color="yellow"):
+            # Note: Flow matching uses direct token prediction (no shifting)
+            loss = DiscreteAbsorbingFlowMatchingScheduler.compute_flow_matching_loss(
+                model_logits=logits,
+                clean_tokens=labels,
+                timesteps=timesteps,
+                corruption_mask=corruption_mask,
+                pad_token_id=self.pad_token_id,
+            )
 
         return (loss, outputs) if return_outputs else loss
 
+    @nvtx.annotate("training_step", color="magenta")
     def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor], num_items_in_batch: int = None) -> torch.Tensor:
         """
         Enhanced training step with conditional EMA updates and WandB logging.
         """
         # Perform the standard training step
-        loss = super().training_step(model, inputs, num_items_in_batch)
+        with nvtx.annotate("super_training_step", color="lime"):
+            loss = super().training_step(model, inputs, num_items_in_batch)
         
         # Increment global step counter
         self.global_step_count += 1
@@ -141,7 +151,8 @@ class FMTrainer(Trainer):
         # Update EMA model conditionally based on update interval
         if (self.ema_enabled and self.ema_model is not None and 
             self.global_step_count % self.ema_update_interval == 0):
-            self.ema_model.step(model)
+            with nvtx.annotate("ema_update", color="coral"):
+                self.ema_model.step(model)
 
         # --- Custom WandB Logging ---
         if self.is_world_process_zero() and wandb.run:
@@ -177,8 +188,8 @@ class FMTrainer(Trainer):
         """
         Override to save EMA model state in checkpoints.
         """
-        # Save standard checkpoint
-        checkpoint_dir = super()._save_checkpoint(model, trial, metrics)
+        # Save standard checkpoint - newer transformers versions only take model and trial
+        checkpoint_dir = super()._save_checkpoint(model, trial)
         
         # Save EMA model state if enabled
         if self.ema_enabled and self.ema_model is not None and checkpoint_dir is not None:

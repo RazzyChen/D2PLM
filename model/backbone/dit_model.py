@@ -312,6 +312,9 @@ class DITModel(PreTrainedModel):
         Returns:
             Time embeddings of shape [batch_size, time_embedding_dim]
         """
+        # Ensure timesteps are in valid range [0, 1]
+        timesteps = torch.clamp(timesteps, min=0.0, max=1.0)
+        
         half_dim = self.config.time_embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(
@@ -366,6 +369,11 @@ class DITModel(PreTrainedModel):
         )
 
         if inputs_embeds is None:
+            # Validate input token IDs are within vocabulary range
+            if torch.any(input_ids < 0) or torch.any(input_ids >= self.config.vocab_size):
+                invalid_ids = input_ids[(input_ids < 0) | (input_ids >= self.config.vocab_size)]
+                raise ValueError(f"Input contains invalid token IDs: {invalid_ids.unique()}. "
+                               f"Valid range is [0, {self.config.vocab_size-1}]")
             inputs_embeds = self.embeddings(input_ids)
 
         if timesteps is None:
