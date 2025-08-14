@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+import wandb
 from diffusers.training_utils import EMAModel
 from transformers import Trainer, PreTrainedTokenizer
 from typing import Dict, Any, List, Tuple, Optional, Union
@@ -70,6 +71,7 @@ class FMTrainer(Trainer):
     def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, **kwargs):
         super().__init__(*args, **kwargs)
         self.pad_token_id: Optional[int] = pad_token_id
+        self.cumulative_tokens = 0
         
         # Initialize EMA model for stable flow matching training
         self.ema_model: EMAModel = EMAModel(
@@ -114,13 +116,29 @@ class FMTrainer(Trainer):
 
     def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Enhanced training step with EMA updates for flow matching.
+        Enhanced training step with EMA updates and WandB logging.
         """
         # Perform the standard training step
         loss = super().training_step(model, inputs)
 
         # Update EMA model after optimizer step
         self.ema_model.step(model.parameters())
+
+        # --- Custom WandB Logging ---
+        if self.is_world_process_zero() and wandb.run:
+            # Calculate non-padding tokens in the batch for the current device
+            tokens_in_batch = inputs["input_ids"].ne(self.pad_token_id).sum().item()
+            
+            # Extrapolate to all processes for total tokens in the global batch
+            total_tokens_in_global_batch = tokens_in_batch * self.args.world_size
+            self.cumulative_tokens += total_tokens_in_global_batch
+            
+            # Log loss and cumulative tokens to WandB
+            wandb.log({
+                "train/loss": loss.item(),
+                "cumulative_tokens": self.cumulative_tokens
+            })
+        # --- End Custom WandB Logging ---
 
         return loss
 
@@ -142,7 +160,7 @@ class FMTrainer(Trainer):
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
         """
-        Enhanced evaluation using EMA weights for better metrics.
+        Enhanced evaluation using EMA weights and logs metrics to WandB.
         """
         # Temporarily switch to EMA weights for evaluation
         self.ema_model.copy_to(self.model.parameters())
@@ -152,5 +170,17 @@ class FMTrainer(Trainer):
         
         # Restore training weights
         self.ema_model.restore(self.model.parameters())
+        
+        # --- Custom WandB Logging for Evaluation ---
+        if self.is_world_process_zero() and wandb.run:
+            # Prepare metrics for logging, ensuring they are serializable
+            metrics_to_log = {
+                f"{metric_key_prefix}/loss": metrics.get(f"{metric_key_prefix}_loss"),
+                "cumulative_tokens": self.cumulative_tokens
+            }
+            # Filter out any potential None values before logging
+            metrics_to_log = {k: v for k, v in metrics_to_log.items() if v is not None}
+            wandb.log(metrics_to_log)
+        # --- End Custom WandB Logging ---
         
         return metrics

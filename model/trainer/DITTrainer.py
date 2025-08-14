@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import wandb
 from diffusers.training_utils import EMAModel
 from transformers import Trainer, PreTrainedTokenizer
 from typing import Dict, Any, List, Tuple, Optional, Union
@@ -73,6 +74,7 @@ class DITTrainer(Trainer):
     def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, **kwargs):
         super().__init__(*args, **kwargs)
         self.pad_token_id: Optional[int] = pad_token_id
+        self.cumulative_tokens = 0
         
         # Initialize the EMAModel, which will handle device placement automatically.
         # It creates a shadow copy of the model's parameters for smooth updates.
@@ -129,16 +131,58 @@ class DITTrainer(Trainer):
 
     def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Overrides the training_step to update EMA weights after each optimizer step.
+        Overrides the training_step to update EMA weights and log to WandB.
         """
         # Perform the original training step (forward, loss, backward)
         loss = super().training_step(model, inputs)
 
-        # After the gradients have been updated (optimizer.step() is called internally),
-        # update the EMA model with the new model parameters.
+        # After the gradients have been updated, update the EMA model.
         self.ema_model.step(model.parameters())
 
+        # --- Custom WandB Logging ---
+        if self.is_world_process_zero() and wandb.run:
+            # Calculate non-padding tokens in the batch for the current device
+            tokens_in_batch = inputs["input_ids"].ne(self.pad_token_id).sum().item()
+            
+            # Extrapolate to all processes for total tokens in the global batch
+            total_tokens_in_global_batch = tokens_in_batch * self.args.world_size
+            self.cumulative_tokens += total_tokens_in_global_batch
+            
+            # Log loss and cumulative tokens to WandB
+            wandb.log({
+                "train/loss": loss.item(),
+                "cumulative_tokens": self.cumulative_tokens
+            })
+        # --- End Custom WandB Logging ---
+
         return loss
+
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        """
+        Enhanced evaluation using EMA weights and logs metrics to WandB.
+        """
+        # Temporarily switch to EMA weights for evaluation
+        self.ema_model.copy_to(self.model.parameters())
+        
+        # Run evaluation
+        metrics = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
+        
+        # Restore training weights
+        self.ema_model.restore(self.model.parameters())
+        
+        # --- Custom WandB Logging for Evaluation ---
+        if self.is_world_process_zero() and wandb.run:
+            # Prepare metrics for logging, ensuring they are serializable
+            metrics_to_log = {
+                f"{metric_key_prefix}/loss": metrics.get(f"{metric_key_prefix}_loss"),
+                "cumulative_tokens": self.cumulative_tokens
+            }
+            # Filter out any potential None values before logging
+            metrics_to_log = {k: v for k, v in metrics_to_log.items() if v is not None}
+            wandb.log(metrics_to_log)
+        # --- End Custom WandB Logging ---
+        
+        return metrics
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         """
@@ -151,6 +195,4 @@ class DITTrainer(Trainer):
         super().save_model(output_dir, _internal_call)
         
         # IMPORTANT: Immediately restore the original model parameters after saving
-        # to continue training from the non-averaged weights. Failing to do so
-        # would disrupt the optimizer's state and the learning trajectory.
         self.ema_model.restore(self.model.parameters())

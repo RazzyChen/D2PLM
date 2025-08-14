@@ -217,6 +217,7 @@ Both training systems include several performance enhancements:
 
 - **⚡ FSDP Integration**: Automatic memory optimization with PyTorch's native FullyShardedDataParallel
 - **📈 EMA Training**: Exponential Moving Average for enhanced model stability and performance  
+- **📊 Loss vs. Cumulative Tokens Tracking**: Detailed logging of training and evaluation loss against total processed tokens for both DiT and Flow Matching, providing deeper insights into performance over training progress.
 - **🔄 Async Data Pipeline**: Overlapped data loading and computation for maximum GPU utilization
 - **🔧 Modular Design**: Clean separation between trainer logic and main orchestration
 - **🎯 Independent Systems**: Zero shared dependencies between diffusion and flow matching
