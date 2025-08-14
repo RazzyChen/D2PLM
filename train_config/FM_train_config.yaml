@@ -69,7 +69,7 @@ training:
 system:
   device: "cuda"
   seed: 42
-  mixed_precision: "fp16"
+  fp16_is_avaliable: "True"
   dataloader_prefetch_factor: 128
   dataloader_num_workers: 12
 
