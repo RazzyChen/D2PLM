@@ -167,7 +167,7 @@ class DiscreteAbsorbingFlowMatchingScheduler:
         seq_indices = torch.arange(clean_tokens.size(1)).unsqueeze(0)
         
         # Set target probabilities for clean tokens at corrupted positions
-        target_distribution[batch_indices, seq_indices, clean_tokens] = corruption_mask.float()
+        target_distribution[batch_indices, seq_indices, clean_tokens] = corruption_mask.to(target_distribution.dtype)
         
         # Convert logits to log probabilities
         log_probs = F.log_softmax(model_logits, dim=-1)

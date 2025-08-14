@@ -171,6 +171,8 @@ def main(cfg: DictConfig) -> None:
         eval_steps=cfg.training.eval_steps,
         # System & Performance
         fp16=cfg.system.fp16_is_avaliable,
+        bf16=False,
+        tf32=False,
         dataloader_num_workers=cfg.system.dataloader_num_workers,
         dataloader_pin_memory=True,
         # Logging & Reporting
@@ -209,6 +211,7 @@ def main(cfg: DictConfig) -> None:
         tokenizer,
         scheduler,
         model_config.mask_token_id,
+        cfg.data.max_length,
     )
 
     # 8. Define Evaluation Metric (adapted for flow matching)
@@ -240,7 +243,9 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
         pad_token_id=tokenizer.pad_token_id,
-        ema_decay=0.9999,
+        ema_decay=cfg.training.ema_decay,
+        ema_enabled=cfg.training.ema_enabled,
+        ema_update_interval=cfg.training.ema_update_interval,
     )
 
     # 10. Start Flow Matching Training

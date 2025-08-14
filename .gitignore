@@ -206,3 +206,17 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# Dataset and cache directories - DO NOT COMMIT
+dataset/
+data_cache/
+raw_dataset/
+*.fasta
+*.meta.json
+
+# Training logs and checkpoints
+wandb/
+weight_*/
+checkpoints/
+*.pt
+*.pth

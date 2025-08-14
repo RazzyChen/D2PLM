@@ -4,10 +4,10 @@
 import torch
 import torch.nn as nn
 import wandb
-from diffusers.training_utils import EMAModel
 from transformers import Trainer, PreTrainedTokenizer
 from typing import Dict, Any, List, Tuple, Optional, Union
 from ..backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
+from .cpu_ema import CPUEMAModel, EMAContextManager
 
 
 class FMDataCollator:
@@ -22,18 +22,23 @@ class FMDataCollator:
         scheduler (DiscreteAbsorbingFlowMatchingScheduler): Flow matching scheduler instance.
         mask_token_id (int): The token ID used for the absorbing (MASK) state.
     """
-    def __init__(self, tokenizer: PreTrainedTokenizer, scheduler: DiscreteAbsorbingFlowMatchingScheduler, mask_token_id: int):
+    def __init__(self, tokenizer: PreTrainedTokenizer, scheduler: DiscreteAbsorbingFlowMatchingScheduler, mask_token_id: int, max_length: int = None):
         self.tokenizer: PreTrainedTokenizer = tokenizer
         self.scheduler: DiscreteAbsorbingFlowMatchingScheduler = scheduler
         self.mask_token_id: int = mask_token_id
+        self.max_length: int = max_length
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """Process a batch of features for flow matching training."""
-        # Stack tensors from the list of features
-        input_ids = torch.stack([torch.tensor(f["input_ids"]) for f in features])
-        attention_mask = torch.stack(
-            [torch.tensor(f["attention_mask"]) for f in features]
+        # Use tokenizer to handle padding automatically
+        batch = self.tokenizer.pad(
+            features,
+            padding='max_length' if self.max_length else True,
+            max_length=self.max_length,
+            return_tensors="pt"
         )
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
 
         batch_size = input_ids.shape[0]
 
@@ -68,17 +73,26 @@ class FMTrainer(Trainer):
         ema_decay (float): The decay factor for the EMA model.
     """
     
-    def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, **kwargs):
+    def __init__(self, *args, pad_token_id: Optional[int] = None, ema_decay: float = 0.9999, 
+                 ema_enabled: bool = True, ema_update_interval: int = 1, **kwargs):
         super().__init__(*args, **kwargs)
         self.pad_token_id: Optional[int] = pad_token_id
         self.cumulative_tokens = 0
+        self.global_step_count = 0
         
-        # Initialize EMA model for stable flow matching training
-        self.ema_model: EMAModel = EMAModel(
-            self.model, decay=ema_decay
-        )
+        # EMA Configuration
+        self.ema_enabled = ema_enabled
+        self.ema_update_interval = ema_update_interval
+        
+        # Initialize CPU-based EMA model
+        if self.ema_enabled:
+            self.ema_model: CPUEMAModel = CPUEMAModel(
+                self.model, decay=ema_decay, device='cpu'
+            )
+        else:
+            self.ema_model = None
 
-    def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
+    def compute_loss(self, model: nn.Module, inputs: Dict[str, torch.Tensor], return_outputs: bool = False, num_items_in_batch: int = None) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
         Compute flow matching loss for discrete sequences.
         
@@ -114,15 +128,20 @@ class FMTrainer(Trainer):
 
         return (loss, outputs) if return_outputs else loss
 
-    def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def training_step(self, model: nn.Module, inputs: Dict[str, torch.Tensor], num_items_in_batch: int = None) -> torch.Tensor:
         """
-        Enhanced training step with EMA updates and WandB logging.
+        Enhanced training step with conditional EMA updates and WandB logging.
         """
         # Perform the standard training step
-        loss = super().training_step(model, inputs)
+        loss = super().training_step(model, inputs, num_items_in_batch)
+        
+        # Increment global step counter
+        self.global_step_count += 1
 
-        # Update EMA model after optimizer step
-        self.ema_model.step(model.parameters())
+        # Update EMA model conditionally based on update interval
+        if (self.ema_enabled and self.ema_model is not None and 
+            self.global_step_count % self.ema_update_interval == 0):
+            self.ema_model.step(model)
 
         # --- Custom WandB Logging ---
         if self.is_world_process_zero() and wandb.run:
@@ -141,6 +160,50 @@ class FMTrainer(Trainer):
         # --- End Custom WandB Logging ---
 
         return loss
+
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        """
+        Override evaluate to use EMA model for evaluation if enabled.
+        """
+        if self.ema_enabled and self.ema_model is not None:
+            # Use EMA model for evaluation
+            with EMAContextManager(self.model, self.ema_model):
+                return super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
+        else:
+            # Use regular model for evaluation
+            return super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
+
+    def _save_checkpoint(self, model, trial, metrics=None):
+        """
+        Override to save EMA model state in checkpoints.
+        """
+        # Save standard checkpoint
+        checkpoint_dir = super()._save_checkpoint(model, trial, metrics)
+        
+        # Save EMA model state if enabled
+        if self.ema_enabled and self.ema_model is not None and checkpoint_dir is not None:
+            import os
+            ema_path = os.path.join(checkpoint_dir, "ema_model.pt")
+            torch.save(self.ema_model.state_dict(), ema_path)
+        
+        return checkpoint_dir
+
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        """
+        Override to load EMA model state from checkpoints.
+        """
+        # Load standard checkpoint
+        result = super()._load_from_checkpoint(resume_from_checkpoint, model)
+        
+        # Load EMA model state if available
+        if self.ema_enabled and self.ema_model is not None:
+            import os
+            ema_path = os.path.join(resume_from_checkpoint, "ema_model.pt")
+            if os.path.exists(ema_path):
+                ema_state = torch.load(ema_path, map_location='cpu')
+                self.ema_model.load_state_dict(ema_state)
+        
+        return result
 
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         """
