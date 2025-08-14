@@ -40,6 +40,7 @@ from transformers import AutoTokenizer
 
 from model.backbone.dit_config import DITConfig
 from model.backbone.dit_model import DITModel
+from model.backbone.flow_matching_scheduler import DiscreteAbsorbingFlowMatchingScheduler
 
 
 class D2PLMEmbeddingExtractor:
@@ -49,26 +50,36 @@ class D2PLMEmbeddingExtractor:
     This class provides a unified interface for extracting CLS token embeddings
     from either Diffusion or Flow Matching trained models. The CLS embedding
     captures the aggregated contextual representation of the entire protein sequence.
+    
+    For Flow Matching models, supports both embedding extraction and sequence generation.
     """
 
-    def __init__(self, model_path: str, device: str = "auto"):
+    def __init__(self, model_path: str, device: str = "auto", model_type: str = "auto"):
         """
         Initialize the embedding extractor.
 
         Args:
             model_path: Path to the trained model directory
             device: Device to run inference on ("cuda", "cpu", or "auto")
+            model_type: Model type ("diffusion", "flow_matching", or "auto")
         """
         self.model_path = Path(model_path)
         self.device = self._setup_device(device)
+        self.model_type = self._detect_model_type(model_type)
 
         print(f"🚀 Loading D2PLM model from: {self.model_path}")
         print(f"📱 Using device: {self.device}")
+        print(f"🔧 Model type: {self.model_type}")
 
         # Load tokenizer and model
         self.tokenizer = self._load_tokenizer()
         self.model = self._load_model()
         self.model.eval()  # Set to evaluation mode
+        
+        # Load flow matching scheduler if needed
+        self.flow_scheduler = None
+        if self.model_type == "flow_matching":
+            self.flow_scheduler = self._load_flow_scheduler()
 
         print("✅ Model loaded successfully!")
         print(f"📊 Model parameters: {self._count_parameters():.1f}M")
@@ -83,6 +94,59 @@ class D2PLMEmbeddingExtractor:
             else:
                 device = "cpu"
         return torch.device(device)
+
+    def _detect_model_type(self, model_type: str) -> str:
+        """Detect model type from configuration files."""
+        if model_type != "auto":
+            return model_type
+            
+        # Check for flow matching configuration
+        fm_config_path = self.model_path / "fm_config.yaml"
+        if fm_config_path.exists():
+            print("🔍 Detected Flow Matching model (fm_config.yaml found)")
+            return "flow_matching"
+            
+        # Default to diffusion if no specific indicators found
+        print("🔍 Defaulting to Diffusion model")
+        return "diffusion"
+
+    def _load_flow_scheduler(self) -> DiscreteAbsorbingFlowMatchingScheduler:
+        """Load Flow Matching scheduler from configuration."""
+        try:
+            import yaml
+            fm_config_path = self.model_path / "fm_config.yaml"
+            
+            if fm_config_path.exists():
+                with open(fm_config_path, 'r') as f:
+                    fm_config = yaml.safe_load(f)
+                
+                # Extract flow matching parameters
+                fm_params = fm_config.get('flow_matching', {})
+                
+                scheduler = DiscreteAbsorbingFlowMatchingScheduler(
+                    vocab_size=fm_config['model']['vocab_size'],
+                    absorbing_token_id=getattr(self.tokenizer, 'mask_token_id', 32),
+                    num_flow_steps=fm_params.get('num_flow_steps', 100),
+                    flow_schedule=fm_params.get('flow_schedule', 'cosine'),
+                    min_flow_time=fm_params.get('min_flow_time', 1e-5),
+                    max_flow_time=fm_params.get('max_flow_time', 1.0),
+                )
+                
+                print(f"📅 Flow scheduler loaded: {fm_params.get('num_flow_steps', 100)} steps, {fm_params.get('flow_schedule', 'cosine')} schedule")
+                return scheduler
+            else:
+                print("⚠️  fm_config.yaml not found, using default flow scheduler")
+                return DiscreteAbsorbingFlowMatchingScheduler(
+                    vocab_size=33,
+                    absorbing_token_id=getattr(self.tokenizer, 'mask_token_id', 32)
+                )
+                
+        except ImportError:
+            print("⚠️  PyYAML not available for flow matching config, using defaults")
+            return DiscreteAbsorbingFlowMatchingScheduler(
+                vocab_size=33,
+                absorbing_token_id=getattr(self.tokenizer, 'mask_token_id', 32)
+            )
 
     def _load_tokenizer(self) -> AutoTokenizer:
         """Load the ESM tokenizer."""
@@ -276,9 +340,118 @@ class D2PLMEmbeddingExtractor:
             "sequence_lengths": sequence_lengths,
             "hidden_size": embeddings.shape[1],
             "model_path": str(self.model_path),
+            "model_type": self.model_type,
         }
 
         return results
+
+    @torch.no_grad()
+    def generate_sequences(
+        self, 
+        num_sequences: int = 1, 
+        max_length: int = 512, 
+        temperature: float = 1.0,
+        num_steps: int = None,
+        cls_token_id: int = 0,
+        eos_token_id: int = 2,
+        pad_token_id: int = 1,
+    ) -> Dict[str, List[str]]:
+        """
+        Generate protein sequences using Flow Matching (only available for flow_matching models).
+        
+        Args:
+            num_sequences: Number of sequences to generate
+            max_length: Maximum sequence length
+            temperature: Sampling temperature (higher = more diverse)
+            num_steps: Number of flow steps (uses scheduler default if None)
+            cls_token_id: CLS token ID (default: 0)
+            eos_token_id: EOS token ID (default: 2)  
+            pad_token_id: Padding token ID (default: 1)
+            
+        Returns:
+            Dictionary containing generated sequences and metadata
+        """
+        if self.model_type != "flow_matching":
+            raise ValueError("Sequence generation is only available for Flow Matching models")
+            
+        if self.flow_scheduler is None:
+            raise RuntimeError("Flow scheduler not loaded")
+            
+        print(f"🧬 Generating {num_sequences} protein sequences...")
+        print(f"📏 Max length: {max_length}, Temperature: {temperature}")
+        
+        # Generate sequences
+        generated_tokens = self.flow_scheduler.generate(
+            model=self.model,
+            shape=(num_sequences, max_length),
+            device=self.device,
+            temperature=temperature,
+            num_steps=num_steps
+        )
+        
+        # Process generated tokens to create valid protein sequences
+        generated_sequences = []
+        for i in range(num_sequences):
+            # Convert tokens to sequence
+            tokens = generated_tokens[i].cpu().tolist()
+            
+            # Add CLS token at the beginning if not present
+            if tokens[0] != cls_token_id:
+                tokens = [cls_token_id] + tokens
+                
+            # Find a reasonable place to add EOS token (avoid very short sequences)
+            # Look for a natural ending point or use a reasonable fraction of max_length
+            min_length = min(50, max_length // 4)  # At least 50 AA or 1/4 of max length
+            
+            # Try to find a good stopping point after min_length
+            eos_pos = len(tokens) - 1
+            for j in range(min_length, len(tokens)):
+                # Simple heuristic: stop at natural boundary tokens or when sequence becomes repetitive
+                if j >= len(tokens) - 10:  # Near the end
+                    eos_pos = j
+                    break
+                    
+            # Insert EOS token and truncate
+            if eos_pos < len(tokens) - 1:
+                tokens = tokens[:eos_pos] + [eos_token_id]
+            else:
+                tokens.append(eos_token_id)
+            
+            # Convert to string
+            try:
+                sequence = self.tokenizer.decode(tokens, skip_special_tokens=False)
+                # Remove special tokens for clean sequence  
+                sequence_clean = self.tokenizer.decode(tokens, skip_special_tokens=True)
+                generated_sequences.append(sequence_clean)
+            except:
+                # Fallback: convert tokens manually if tokenizer fails
+                # This is a simplified conversion - you might need to adjust based on your tokenizer
+                sequence_clean = ""
+                for token_id in tokens[1:-1]:  # Skip CLS and EOS
+                    if token_id not in [cls_token_id, eos_token_id, pad_token_id]:
+                        # Simple mapping - this might need adjustment for your specific tokenizer
+                        if token_id < len("ACDEFGHIKLMNPQRSTVWY"):
+                            sequence_clean += "ACDEFGHIKLMNPQRSTVWY"[token_id]
+                generated_sequences.append(sequence_clean)
+        
+        print(f"✅ Generated {len(generated_sequences)} sequences")
+        
+        # Show some examples
+        print("\n🔍 Generated sequence examples:")
+        for i, seq in enumerate(generated_sequences[:3]):
+            preview = seq[:50] + "..." if len(seq) > 50 else seq
+            print(f"  Sequence {i+1}: {preview} (length: {len(seq)})")
+            
+        return {
+            "sequences": generated_sequences,
+            "num_sequences": len(generated_sequences),
+            "generation_params": {
+                "temperature": temperature,
+                "max_length": max_length,
+                "num_steps": num_steps or self.flow_scheduler.num_flow_steps,
+                "model_type": self.model_type
+            }
+        }
 
 
 def load_sequences_from_fasta(fasta_path: str) -> Tuple[List[str], List[str]]:
@@ -350,18 +523,21 @@ def load_sequences_from_text(text_sequences: str) -> Tuple[List[str], List[str]]
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract protein embeddings from D2PLM models",
+        description="Extract protein embeddings or generate sequences from D2PLM models",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     # Extract embeddings for downstream training
-    python inference_embeddings.py --model_path /path/to/model --fasta_file sequences.fasta --output protein_embeddings.pt
+    python inference.py --model_path /path/to/model --fasta_file sequences.fasta --output protein_embeddings.pt
     
-    # From command line sequences
-    python inference_embeddings.py --model_path /path/to/model --sequences "MKWV,MGAS" --output embeddings.pt
+    # From command line sequences  
+    python inference.py --model_path /path/to/model --sequences "MKWV,MGAS" --output embeddings.pt
     
-    # Use GPU with larger batch size  
-    python inference_embeddings.py --model_path /path/to/model --fasta_file seqs.fasta --device cuda --batch_size 32 --output embeddings.pt
+    # Generate new sequences (Flow Matching models only)
+    python inference.py --model_path /path/to/flow_matching_model --generate --num_sequences 10 --max_length 200
+    
+    # Generate with custom parameters
+    python inference.py --model_path /path/to/flow_matching_model --generate --num_sequences 5 --temperature 1.2 --num_steps 50
         """,
     )
 
@@ -370,11 +546,18 @@ Examples:
         "--model_path", required=True, help="Path to trained D2PLM model directory"
     )
     parser.add_argument(
-        "--fasta_file", help="FASTA file containing protein sequences (preferred)"
+        "--fasta_file", help="FASTA file containing protein sequences (for embedding extraction)"
     )
     parser.add_argument(
         "--sequences",
         help="Comma-separated protein sequences (alternative to --fasta_file)",
+    )
+    
+    # Mode selection
+    parser.add_argument(
+        "--generate", 
+        action="store_true",
+        help="Generate new sequences instead of extracting embeddings (Flow Matching only)"
     )
 
     # Processing options
@@ -395,100 +578,167 @@ Examples:
         default="auto",
         help="Device for inference: cuda/cpu/mps/auto (default: auto)",
     )
+    parser.add_argument(
+        "--model_type",
+        default="auto",
+        choices=["auto", "diffusion", "flow_matching"],
+        help="Model type (default: auto-detect)",
+    )
+    
+    # Generation-specific options
+    parser.add_argument(
+        "--num_sequences",
+        type=int,
+        default=1,
+        help="Number of sequences to generate (generation mode only, default: 1)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature for generation (default: 1.0)",
+    )
+    parser.add_argument(
+        "--num_steps",
+        type=int,
+        help="Number of flow steps for generation (uses model default if not specified)",
+    )
 
     # Output options
     parser.add_argument(
         "--output",
-        help="Output file path for embeddings (saves as .pt for downstream training)",
+        help="Output file path for embeddings (.pt) or generated sequences (.fasta)",
     )
 
     args = parser.parse_args()
 
-    # Validate inputs
-    if not args.fasta_file and not args.sequences:
-        parser.error("Either --fasta_file or --sequences must be provided")
-
-    if args.fasta_file and args.sequences:
-        parser.error("Cannot specify both --fasta_file and --sequences")
-
-    # Load sequences
-    if args.fasta_file:
-        if not os.path.exists(args.fasta_file):
-            raise FileNotFoundError(f"FASTA file not found: {args.fasta_file}")
-        sequences, sequence_ids = load_sequences_from_fasta(args.fasta_file)
+    # Validate inputs based on mode
+    if args.generate:
+        # Generation mode
+        if args.fasta_file or args.sequences:
+            print("⚠️  In generation mode, --fasta_file and --sequences are ignored")
+        print(f"🚀 Generation mode: creating {args.num_sequences} new sequences")
     else:
-        sequences, sequence_ids = load_sequences_from_text(args.sequences)
+        # Embedding extraction mode  
+        if not args.fasta_file and not args.sequences:
+            parser.error("For embedding extraction, either --fasta_file or --sequences must be provided")
+        if args.fasta_file and args.sequences:
+            parser.error("Cannot specify both --fasta_file and --sequences")
+        
+        # Load sequences for embedding extraction
+        if args.fasta_file:
+            if not os.path.exists(args.fasta_file):
+                raise FileNotFoundError(f"FASTA file not found: {args.fasta_file}")
+            sequences, sequence_ids = load_sequences_from_fasta(args.fasta_file)
+        else:
+            sequences, sequence_ids = load_sequences_from_text(args.sequences)
 
-    if not sequences:
-        raise ValueError("No valid sequences provided")
-
-    print(f"🧬 Loaded {len(sequences)} valid protein sequences")
+        if not sequences:
+            raise ValueError("No valid sequences provided")
+        
+        print(f"🧬 Loaded {len(sequences)} valid protein sequences for embedding extraction")
 
     # Initialize extractor
-    extractor = D2PLMEmbeddingExtractor(model_path=args.model_path, device=args.device)
-
-    # Extract embeddings
-    results = extractor.extract_embeddings(
-        sequences=sequences, batch_size=args.batch_size, max_length=args.max_length
+    extractor = D2PLMEmbeddingExtractor(
+        model_path=args.model_path, 
+        device=args.device,
+        model_type=args.model_type
     )
 
-    # Results already contain all needed data
-
-    # Save results for downstream training
-    if args.output:
-        # Ensure output directory exists
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Prepare data for downstream training
-        training_data = {
-            "embeddings": torch.tensor(results["embeddings"], dtype=torch.float32),
-            "sequence_ids": sequence_ids,
-            "sequences": sequences,
-            "sequence_lengths": torch.tensor(
-                results["sequence_lengths"], dtype=torch.long
-            ),
-            "hidden_size": results["hidden_size"],
-            "model_path": str(results["model_path"]),
-            "metadata": {
-                "num_sequences": len(sequences),
-                "avg_length": float(np.mean(results["sequence_lengths"])),
-                "min_length": int(min(results["sequence_lengths"])),
-                "max_length": int(max(results["sequence_lengths"])),
-                "extraction_device": str(extractor.device),
-            },
-        }
-
-        # Save as PyTorch format (best for downstream training)
-        torch.save(training_data, output_path)
-        print(f"💾 Saved embeddings for downstream training: {output_path}")
-        print(f"📊 Data shape: {training_data['embeddings'].shape}")
-        print("🔧 Ready for adding classification/regression heads!")
+    if args.generate:
+        # Generation mode
+        results = extractor.generate_sequences(
+            num_sequences=args.num_sequences,
+            max_length=args.max_length,
+            temperature=args.temperature,
+            num_steps=args.num_steps,
+        )
+        
+        # Save or display results
+        if args.output:
+            # Save as FASTA file
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_path, 'w') as f:
+                for i, seq in enumerate(results["sequences"]):
+                    f.write(f">generated_sequence_{i+1}\n{seq}\n")
+            
+            print(f"💾 Saved generated sequences: {output_path}")
+            print(f"📊 Generated {len(results['sequences'])} sequences")
+        else:
+            # Print generated sequences
+            print("\n🧬 Generated sequences:")
+            for i, seq in enumerate(results["sequences"]):
+                print(f">generated_sequence_{i+1}")
+                print(seq)
+            
+            print(f"\n💡 To save sequences, use: --output generated_sequences.fasta")
+            
     else:
-        # Print summary
-        print("\n📊 Embedding Extraction Summary:")
-        print(f"Number of sequences: {len(sequences)}")
-        print(f"Embedding dimension: {results['hidden_size']}")
-        print(
-            f"Average sequence length: {np.mean(results['sequence_lengths']):.1f} amino acids"
-        )
-        print(
-            f"Min/Max sequence length: {min(results['sequence_lengths'])}/{max(results['sequence_lengths'])}"
+        # Embedding extraction mode
+        results = extractor.extract_embeddings(
+            sequences=sequences, 
+            batch_size=args.batch_size, 
+            max_length=args.max_length
         )
 
-        print("\n🔍 First few sequences:")
-        for i in range(min(3, len(sequences))):
-            seq_preview = (
-                sequences[i][:50] + "..." if len(sequences[i]) > 50 else sequences[i]
+        # Save results for downstream training
+        if args.output:
+            # Ensure output directory exists
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Prepare data for downstream training
+            training_data = {
+                "embeddings": torch.tensor(results["embeddings"], dtype=torch.float32),
+                "sequence_ids": sequence_ids,
+                "sequences": sequences,
+                "sequence_lengths": torch.tensor(
+                    results["sequence_lengths"], dtype=torch.long
+                ),
+                "hidden_size": results["hidden_size"],
+                "model_path": str(results["model_path"]),
+                "model_type": results["model_type"],
+                "metadata": {
+                    "num_sequences": len(sequences),
+                    "avg_length": float(np.mean(results["sequence_lengths"])),
+                    "min_length": int(min(results["sequence_lengths"])),
+                    "max_length": int(max(results["sequence_lengths"])),
+                    "extraction_device": str(extractor.device),
+                },
+            }
+
+            # Save as PyTorch format (best for downstream training)
+            torch.save(training_data, output_path)
+            print(f"💾 Saved embeddings for downstream training: {output_path}")
+            print(f"📊 Data shape: {training_data['embeddings'].shape}")
+            print("🔧 Ready for adding classification/regression heads!")
+        else:
+            # Print summary
+            print("\n📊 Embedding Extraction Summary:")
+            print(f"Number of sequences: {len(sequences)}")
+            print(f"Embedding dimension: {results['hidden_size']}")
+            print(
+                f"Average sequence length: {np.mean(results['sequence_lengths']):.1f} amino acids"
             )
             print(
-                f"  {sequence_ids[i]}: {seq_preview} (length: {results['sequence_lengths'][i]})"
+                f"Min/Max sequence length: {min(results['sequence_lengths'])}/{max(results['sequence_lengths'])}"
             )
 
-        print("\n📊 First embedding (first 10 dimensions):")
-        print(f"  {results['embeddings'][0][:10]}")
+            print("\n🔍 First few sequences:")
+            for i in range(min(3, len(sequences))):
+                seq_preview = (
+                    sequences[i][:50] + "..." if len(sequences[i]) > 50 else sequences[i]
+                )
+                print(
+                    f"  {sequence_ids[i]}: {seq_preview} (length: {results['sequence_lengths'][i]})"
+                )
 
-        print("\n💡 To save for downstream training, use: --output embeddings.pt")
+            print("\n📊 First embedding (first 10 dimensions):")
+            print(f"  {results['embeddings'][0][:10]}")
+
+            print("\n💡 To save for downstream training, use: --output embeddings.pt")
 
 
 if __name__ == "__main__":
